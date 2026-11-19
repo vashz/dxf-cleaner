@@ -86,7 +86,7 @@ impl App {
                 self.before = job.before();
                 self.status = format!(
                     "Loaded {} ({} entities). Click \"Clean Up\".",
-                    job.source().file_name().unwrap_or_default().to_string_lossy(),
+                    job.file_name(),
                     job.drawing().entities.len()
                 );
                 self.job = Some(job);
@@ -106,7 +106,7 @@ impl App {
 
     fn run_clean(&mut self) {
         let Some(job) = &self.job else { return };
-        self.opt.single_layer = if self.one_layer { Some("0".into()) } else { None };
+        self.opt.put_everything_on_layer_0(self.one_layer);
         let t = std::time::Instant::now();
         let res = job.clean(&self.opt);
         let s = &res.stats;
@@ -362,7 +362,7 @@ impl eframe::App for App {
                 ui.checkbox(&mut self.show_nodes, "Show nodes");
                 ui.separator();
                 if let Some(job) = &self.job {
-                    ui.label(egui::RichText::new(job.source().file_name().unwrap_or_default().to_string_lossy()).strong());
+                    ui.label(egui::RichText::new(job.file_name()).strong());
                 }
             });
             ui.add_space(6.0);
