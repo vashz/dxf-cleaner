@@ -526,8 +526,8 @@ fn convert_entity(e: &Entity, tol: f64) -> Converted {
         run.clear();
     };
     for span in &spans.spans {
-        if let Span::Bulge { a, b, bulge } = *span {
-            if bulge.abs() < LINE_BULGE_EPS {
+        if let Span::Bulge { a, b, .. } = *span {
+            if span.is_straight() {
                 if run.is_empty() {
                     run.push(a);
                 }
@@ -564,7 +564,7 @@ fn fit_span(span: &Span, tol: f64, segs: &mut Vec<Seg>) {
         Span::Bulge { a, b, bulge } => {
             if a.dist(b) > negligible(tol) {
                 let s = Seg::new(a, b, bulge);
-                // split big arcs into <= 90 degree pieces for robust merging
+                // split big arcs into segments of at most 90 degrees for robust merging
                 match s.arc() {
                     Some(ai) if ai.sweep.abs() > PI / 2.0 + 1e-9 => segs.extend(arc_segs(ai.c, ai.r, ai.a0, ai.a0 + ai.sweep)),
                     _ => segs.push(s),

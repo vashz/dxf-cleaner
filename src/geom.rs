@@ -124,6 +124,11 @@ pub struct Seg {
 
 pub const LINE_BULGE_EPS: f64 = 1e-9;
 
+/// A bulge this small draws a straight line.
+pub fn bulge_is_straight(bulge: f64) -> bool {
+    bulge.abs() < LINE_BULGE_EPS
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ArcInfo {
     pub c: P,
@@ -144,7 +149,7 @@ impl Seg {
         Seg { a, b, bulge, support }
     }
     pub fn is_line(&self) -> bool {
-        self.bulge.abs() < LINE_BULGE_EPS
+        bulge_is_straight(self.bulge)
     }
     pub fn chord(&self) -> f64 {
         self.a.dist(self.b)

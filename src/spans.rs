@@ -3,7 +3,7 @@
 //! so the preview always shows the geometry Clean Up reads.
 
 use crate::dxf_read::Geom;
-use crate::geom::{p, Seg, LINE_BULGE_EPS, P};
+use crate::geom::{bulge_is_straight, p, Seg, P};
 use std::f64::consts::PI;
 
 /// One stretch of an entity's original geometry described by one formula.
@@ -97,9 +97,9 @@ pub fn outline(g: &Geom) -> Outline {
     let mut pts: Vec<P> = Vec::new();
     for s in &spans.spans {
         let smp = preview_samples(s);
-        // each span starts where the previous one ended
-        let skip = usize::from(!pts.is_empty()).min(smp.len());
-        pts.extend_from_slice(&smp[skip..]);
+        // a span usually starts where the previous one ended: draw that point once
+        let joined = matches!((pts.last(), smp.first()), (Some(end), Some(start)) if end.dist(*start) <= CLOSING_GAP);
+        pts.extend_from_slice(&smp[usize::from(joined)..]);
     }
     if spans.closed {
         if let (Some(&first), Some(&last)) = (pts.first(), pts.last()) {
@@ -137,8 +137,8 @@ fn preview_samples(s: &Span) -> Vec<P> {
         Span::Circle { .. } => (0..=96).map(|i| s.at(i as f64 / 96.0 * 2.0 * PI)).collect(),
         Span::Arc { a0, a1, .. } => along(64, a0, a1),
         Span::Ellipse { t0, t1, .. } => along(96, t0, t1),
-        Span::Bulge { a, bulge, .. } => {
-            let mut v = along(if bulge.abs() < LINE_BULGE_EPS { 1 } else { 24 }, 0.0, 1.0);
+        Span::Bulge { a, .. } => {
+            let mut v = along(if s.is_straight() { 1 } else { 24 }, 0.0, 1.0);
             v[0] = a;
             v
         }
@@ -148,6 +148,15 @@ fn preview_samples(s: &Span) -> Vec<P> {
 }
 
 impl Span<'_> {
+    /// A line, or a polyline span whose bulge is too small to bow.
+    pub fn is_straight(&self) -> bool {
+        match *self {
+            Span::Line { .. } => true,
+            Span::Bulge { bulge, .. } => bulge_is_straight(bulge),
+            _ => false,
+        }
+    }
+
     /// The point at `t`: the angle on an arc or circle, the parameter of an ellipse or
     /// spline span, or the fraction (0 to 1) along a line or polyline span.
     /// Fit points have no parameter.
@@ -268,7 +277,7 @@ mod tests {
 
     #[test]
     fn spline_spans_skip_zero_length_knot_spans() {
-        // two cubic Bezier pieces: knots 0,0,0,0,1,1,1,2,2,2,2 -> spans [0,1] and [1,2] only
+        // two cubic Bezier spans: knots 0,0,0,0,1,1,1,2,2,2,2 -> spans [0,1] and [1,2] only
         let ctrl: Vec<P> = (0..7).map(|i| p(i as f64, (i % 2) as f64)).collect();
         let g = Geom::Spline {
             degree: 3,
@@ -296,7 +305,7 @@ mod tests {
         bezier(false)
     }
 
-    /// Two cubic Bezier pieces from (0, 0) via (4, 0) to (8, 0).
+    /// Two cubic Bezier spans from (0, 0) via (4, 0) to (8, 0).
     fn bezier(closed: bool) -> Geom {
         Geom::Spline {
             degree: 3,
@@ -337,9 +346,28 @@ mod tests {
             assert!(o.pts.iter().any(|q| q.dist(a) < 1e-9) && o.pts.iter().any(|q| q.dist(b) < 1e-9), "{a:?} {b:?}");
         }
         assert_eq!(o.pts[0], p(0.0, 0.0), "starts exactly on the first vertex");
-        // the joint between the two Bezier pieces
+        // the joint between the two Bezier spans
         let o = outline(&bezier_pair());
         assert!(o.pts.iter().any(|q| q.dist(p(4.0, 0.0)) < 1e-12));
+    }
+
+    #[test]
+    fn preview_bridges_a_spline_broken_at_a_knot_from_end_to_start() {
+        // inner knot repeated degree + 1 times: the second span starts at ctrl[4], not where
+        // the first one ends (ctrl[3])
+        let ctrl: Vec<P> = (0..8).map(|i| p(i as f64, if i < 4 { 0.0 } else { 5.0 })).collect();
+        let g = Geom::Spline {
+            degree: 3,
+            knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0],
+            ctrl: ctrl.clone(),
+            weights: vec![1.0; 8],
+            fit: vec![],
+            closed: false,
+        };
+        let pts = outline(&g).pts;
+        let at = |q: P| pts.iter().position(|x| x.dist(q) < 1e-12);
+        let (end, start) = (at(ctrl[3]).expect("first span's end"), at(ctrl[4]).expect("second span's start"));
+        assert_eq!(start, end + 1, "the break is bridged by one straight step");
     }
 
     #[test]
@@ -361,6 +389,10 @@ mod tests {
         assert_eq!(nodes.len(), 2 + ctrl.len());
         assert!(nodes[0].dist(p(0.0, 0.0)) < 1e-12 && nodes[1].dist(p(4.0, 0.0)) < 1e-12);
         assert_eq!(nodes[2..], ctrl[..]);
+        // a spline drawn through fit points: every fit point
+        let fit = vec![p(0.0, 0.0), p(1.0, 1.0), p(2.0, 0.0)];
+        let g = Geom::Spline { degree: 3, knots: vec![], ctrl: vec![], weights: vec![], fit: fit.clone(), closed: false };
+        assert_eq!(outline(&g).nodes, fit);
     }
 
     #[test]
