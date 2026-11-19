@@ -49,14 +49,87 @@ struct Limits {
 /// segments), so no join can move original geometry past the tolerance; see [`meet`].
 #[derive(Clone, Debug)]
 pub struct Path {
-    segs: Vec<Seg>,
+    segs: Vec<Fitted>,
     closed: bool,
     layer: String,
 }
 
+/// One segment of a path, with the points on the original geometry it replaces. Every merge,
+/// meet and circle check is verified against those points, so no change to a path can move the
+/// original geometry past the tolerance unnoticed.
+#[derive(Clone, Debug)]
+struct Fitted {
+    seg: Seg,
+    /// Points on the original geometry this segment replaces, in order from `seg.a` to `seg.b`.
+    original: Vec<P>,
+}
+
+/// Merged segments keep at most this many original samples.
+const MAX_ORIGINAL: usize = 400;
+
+impl Fitted {
+    fn new(seg: Seg, original: Vec<P>) -> Fitted {
+        Fitted { seg, original }
+    }
+
+    /// A segment that is itself original geometry (a line, an arc, a polyline span), sampled
+    /// from its own points.
+    fn exact(seg: Seg) -> Fitted {
+        let original = seg.samples(if seg.is_line() { 2 } else { 8 });
+        Fitted { seg, original }
+    }
+
+    fn reversed(&self) -> Fitted {
+        let mut original = self.original.clone();
+        original.reverse();
+        Fitted { seg: self.seg.reversed(), original }
+    }
+
+    /// Moves the segment and its original samples by `d`.
+    fn translate(&mut self, d: P) {
+        self.seg.a = self.seg.a + d;
+        self.seg.b = self.seg.b + d;
+        for q in &mut self.original {
+            *q = *q + d;
+        }
+    }
+
+    /// Whether every original sample lies within `tol` of the segment. A sample whose distance
+    /// cannot be measured (NaN) fails.
+    fn traces_original(&self, tol: f64) -> bool {
+        self.original.iter().all(|q| self.seg.dist_to(*q) <= tol)
+    }
+
+    /// The segment split at its midpoint, each half keeping the original samples nearest to it.
+    fn halves(&self) -> (Fitted, Fitted) {
+        let s = &self.seg;
+        let m = s.midpoint();
+        let bulge = (s.bulge.atan() / 2.0).tan();
+        let (h1, h2) = (Seg::new(s.a, m, bulge), Seg::new(m, s.b, bulge));
+        let (o1, o2): (Vec<P>, Vec<P>) = self.original.iter().partition(|q| h1.dist_to(**q) <= h2.dist_to(**q));
+        (Fitted::new(h1, o1), Fitted::new(h2, o2))
+    }
+
+    /// The original samples of `a` followed by those of `b`, thinned to at most `MAX_ORIGINAL`.
+    fn merged_original(a: &Fitted, b: &Fitted) -> Vec<P> {
+        let mut v = Vec::with_capacity(a.original.len() + b.original.len());
+        v.extend_from_slice(&a.original);
+        v.extend_from_slice(&b.original);
+        while v.len() > MAX_ORIGINAL {
+            // keep endpoints, decimate the rest
+            let last = *v.last().unwrap();
+            v = v.iter().step_by(2).copied().collect();
+            if v.last() != Some(&last) {
+                v.push(last);
+            }
+        }
+        v
+    }
+}
+
 impl Path {
-    pub fn segs(&self) -> &[Seg] {
-        &self.segs
+    pub fn segs(&self) -> impl ExactSizeIterator<Item = &Seg> {
+        self.segs.iter().map(|f| &f.seg)
     }
     pub fn is_closed(&self) -> bool {
         self.closed
@@ -65,10 +138,10 @@ impl Path {
         &self.layer
     }
     pub fn start(&self) -> P {
-        self.segs[0].a
+        self.segs[0].seg.a
     }
     pub fn end(&self) -> P {
-        self.segs.last().unwrap().b
+        self.segs.last().unwrap().seg.b
     }
     fn reverse(&mut self) {
         self.segs.reverse();
@@ -90,12 +163,12 @@ impl Path {
     /// The path a converted source entity becomes. A closed entity (e.g. a closed polyline
     /// whose last vertex does not repeat the first) gets its closing segment; an open one is
     /// closed if its own ends touch.
-    fn from_entity(segs: Vec<Seg>, closed: bool, layer: String, lim: Limits) -> Path {
+    fn from_entity(segs: Vec<Fitted>, closed: bool, layer: String, lim: Limits) -> Path {
         let mut path = Path { segs, closed: false, layer };
         if closed {
             if path.end().dist(path.start()) > negligible(lim.tol) {
                 // part of the source geometry, not a bridge
-                path.segs.push(Seg::new(path.end(), path.start(), 0.0));
+                path.segs.push(Fitted::exact(Seg::new(path.end(), path.start(), 0.0)));
             }
             path.close(lim.tol);
         } else {
@@ -108,7 +181,7 @@ impl Path {
     fn close(&mut self, tol: f64) {
         if self.segs.len() == 1 {
             // a lone segment cannot meet itself: split it so its two halves can
-            let (h1, h2) = halves(&self.segs[0]);
+            let (h1, h2) = self.segs[0].halves();
             self.segs = vec![h1, h2];
         }
         let last = self.segs.pop().unwrap();
@@ -127,19 +200,15 @@ impl Path {
         }
         let gap = lim.join_gap;
         let len = self.length();
-        if self.start().dist(self.end()) <= gap && len > 4.0 * gap && (self.segs.len() >= 2 || !self.segs[0].is_line()) {
+        if self.start().dist(self.end()) <= gap && len > 4.0 * gap && (self.segs.len() >= 2 || !self.segs[0].seg.is_line()) {
             self.close(lim.tol);
         }
     }
 
-    /// Moves the whole path, with its support samples, by `d`.
+    /// Moves the whole path, with its original samples, by `d`.
     fn translate(&mut self, d: P) {
-        for seg in &mut self.segs {
-            seg.a = seg.a + d;
-            seg.b = seg.b + d;
-            for q in &mut seg.support {
-                *q = *q + d;
-            }
+        for f in &mut self.segs {
+            f.translate(d);
         }
     }
 
@@ -156,13 +225,13 @@ impl Path {
             return false;
         }
         let covers = |x: &Path, y: &Path| {
-            x.segs.iter().all(|s| s.samples(if s.is_line() { 2 } else { 6 }).iter().all(|q| dist_to_segs(*q, &y.segs) <= tol))
+            x.segs().all(|s| s.samples(if s.is_line() { 2 } else { 6 }).iter().all(|q| dist_to_segs(*q, y.segs()) <= tol))
         };
         covers(self, other) && covers(other, self)
     }
     pub fn bbox(&self) -> BBox {
         let mut b = BBox::empty();
-        for s in &self.segs {
+        for s in self.segs() {
             for q in s.samples(if s.is_line() { 1 } else { 16 }) {
                 b.add(q);
             }
@@ -170,7 +239,7 @@ impl Path {
         b
     }
     pub fn length(&self) -> f64 {
-        self.segs.iter().map(|s| s.length()).sum()
+        self.segs().map(|s| s.length()).sum()
     }
 }
 
@@ -242,7 +311,7 @@ fn max_dev(segs: &[Seg], samples: &[P]) -> f64 {
 /// Arc from a to b (endpoints fixed) whose bulge minimises the max deviation to `samples`.
 fn best_arc(a: P, b: P, init_bulge: f64, samples: &[P], tol: f64) -> (f64, f64) {
     let dev = |bu: f64| {
-        let s = Seg::with_support(a, b, bu, Vec::new());
+        let s = Seg::new(a, b, bu);
         samples.iter().map(|q| s.dist_to(*q)).fold(0.0, f64::max)
     };
     let d0 = dev(init_bulge);
@@ -303,16 +372,14 @@ fn biarc(p1: P, t1: P, p2: P, t2: P) -> Option<(Seg, Seg)> {
     if pm.dist(p1) < 1e-12 || pm.dist(p2) < 1e-12 {
         return None;
     }
-    let s1 = Seg::with_support(p1, pm, bulge_from_start_tangent(p1, pm, t1), Vec::new());
-    let s2 = Seg::with_support(pm, p2, bulge_from_end_tangent(pm, p2, t2), Vec::new());
+    let s1 = Seg::new(p1, pm, bulge_from_start_tangent(p1, pm, t1));
+    let s2 = Seg::new(pm, p2, bulge_from_end_tangent(pm, p2, t2));
     Some((s1, s2))
 }
 
-fn assign_support(segs: &mut [Seg], samples: &[P]) {
-    for s in segs.iter_mut() {
-        s.support.clear();
-        s.support.push(s.a);
-    }
+/// `segs` with each of `samples` given to the segment nearest to it, between the segment's own ends.
+fn assign_original(segs: &[Seg], samples: &[P]) -> Vec<Fitted> {
+    let mut out: Vec<Fitted> = segs.iter().map(|s| Fitted::new(*s, vec![s.a])).collect();
     for q in samples {
         let (mut bi, mut bd) = (0, f64::INFINITY);
         for (i, s) in segs.iter().enumerate() {
@@ -322,22 +389,23 @@ fn assign_support(segs: &mut [Seg], samples: &[P]) {
                 bi = i;
             }
         }
-        segs[bi].support.push(*q);
+        out[bi].original.push(*q);
     }
-    for s in segs.iter_mut() {
-        s.support.push(s.b);
+    for f in &mut out {
+        f.original.push(f.seg.b);
     }
+    out
 }
 
 /// Fit a smooth parametric curve on [t0, t1] with lines/arcs/biarcs.
-fn fit_parametric(f: &dyn Fn(f64) -> P, t0: f64, t1: f64, tol: f64, depth: usize, out: &mut Vec<Seg>) {
+fn fit_parametric(f: &dyn Fn(f64) -> P, t0: f64, t1: f64, tol: f64, depth: usize, out: &mut Vec<Fitted>) {
     let a = f(t0);
     let b = f(t1);
     let samples: Vec<P> = (0..=SAMPLES).map(|i| f(t0 + (t1 - t0) * i as f64 / SAMPLES as f64)).collect();
     if samples.iter().all(|q| q.dist(a) <= negligible(tol)) {
         return; // degenerate (zero length)
     }
-    let split = |out: &mut Vec<Seg>| {
+    let split = |out: &mut Vec<Fitted>| {
         let tm = 0.5 * (t0 + t1);
         fit_parametric(f, t0, tm, tol, depth + 1, out);
         fit_parametric(f, tm, t1, tol, depth + 1, out);
@@ -351,7 +419,7 @@ fn fit_parametric(f: &dyn Fn(f64) -> P, t0: f64, t1: f64, tol: f64, depth: usize
     }
     // 1. straight line
     if samples.iter().all(|q| dist_point_segment(*q, a, b) <= tol) {
-        out.push(Seg::with_support(a, b, 0.0, samples));
+        out.push(Fitted::new(Seg::new(a, b, 0.0), samples));
         return;
     }
     // 2. single arc
@@ -359,9 +427,9 @@ fn fit_parametric(f: &dyn Fn(f64) -> P, t0: f64, t1: f64, tol: f64, depth: usize
     let bu0 = bulge_through(a, m, b);
     if bu0.is_finite() {
         let (bu, _) = best_arc(a, b, bu0, &samples, tol);
-        let s = Seg::with_support(a, b, bu, Vec::new());
+        let s = Seg::new(a, b, bu);
         if s.sweep().abs() < 2.0 * PI - 1e-3 && max_dev(std::slice::from_ref(&s), &samples) <= tol {
-            out.push(Seg::with_support(a, b, bu, samples));
+            out.push(Fitted::new(s, samples));
             return;
         }
     }
@@ -371,10 +439,9 @@ fn fit_parametric(f: &dyn Fn(f64) -> P, t0: f64, t1: f64, tol: f64, depth: usize
     let tb = (b - f(t1 - h)).norm();
     if ta.len() > 0.5 && tb.len() > 0.5 {
         if let Some((s1, s2)) = biarc(a, ta, b, tb) {
-            let mut segs = [s1, s2];
+            let segs = [s1, s2];
             if max_dev(&segs, &samples) <= tol {
-                assign_support(&mut segs, &samples);
-                out.extend(segs);
+                out.extend(assign_original(&segs, &samples));
                 return;
             }
         }
@@ -385,7 +452,7 @@ fn fit_parametric(f: &dyn Fn(f64) -> P, t0: f64, t1: f64, tol: f64, depth: usize
     } else {
         for w in samples.windows(2) {
             if w[0].dist(w[1]) > 0.0 {
-                out.push(Seg::with_support(w[0], w[1], 0.0, vec![w[0], w[1]]));
+                out.push(Fitted::new(Seg::new(w[0], w[1], 0.0), vec![w[0], w[1]]));
             }
         }
     }
@@ -420,7 +487,7 @@ fn arc_ok(q: &[P], i: usize, j: usize, tol: f64) -> Option<f64> {
     if !bu.is_finite() {
         return None;
     }
-    let s = Seg::with_support(q[i], q[j], bu, Vec::new());
+    let s = Seg::new(q[i], q[j], bu);
     let ai = s.arc()?;
     if ai.sweep.abs() > 2.0 * PI - 1e-3 {
         return None;
@@ -446,7 +513,7 @@ fn arc_ok(q: &[P], i: usize, j: usize, tol: f64) -> Option<f64> {
 }
 
 /// Fit a run of points (tessellated outline) with the fewest lines and arcs.
-pub fn fit_points(pts: &[P], tol: f64) -> Vec<Seg> {
+fn fit_points(pts: &[P], tol: f64) -> Vec<Fitted> {
     let mut q: Vec<P> = Vec::with_capacity(pts.len());
     for &x in pts {
         if q.last().map(|l: &P| l.dist(x) > negligible(tol)).unwrap_or(true) {
@@ -479,11 +546,11 @@ pub fn fit_points(pts: &[P], tol: f64) -> Vec<Seg> {
             Some((j, bu)) if j > jl => {
                 let sup = q[i..=j].to_vec();
                 let (bu, _) = best_arc(q[i], q[j], bu, &sup, tol);
-                out.push(Seg::with_support(q[i], q[j], bu, sup));
+                out.push(Fitted::new(Seg::new(q[i], q[j], bu), sup));
                 i = j;
             }
             _ => {
-                out.push(Seg::with_support(q[i], q[jl], 0.0, q[i..=jl].to_vec()));
+                out.push(Fitted::new(Seg::new(q[i], q[jl], 0.0), q[i..=jl].to_vec()));
                 i = jl;
             }
         }
@@ -493,7 +560,7 @@ pub fn fit_points(pts: &[P], tol: f64) -> Vec<Seg> {
 
 // ---------------------------------------------------------------- entity -> segments
 
-fn arc_segs(c: P, r: f64, a0: f64, a1: f64) -> Vec<Seg> {
+fn arc_segs(c: P, r: f64, a0: f64, a1: f64) -> Vec<Fitted> {
     let sweep = a1 - a0;
     let n = (sweep.abs() / (PI / 2.0)).ceil().max(1.0) as usize;
     let pt = |a: f64| c + p(a.cos(), a.sin()) * r;
@@ -501,13 +568,13 @@ fn arc_segs(c: P, r: f64, a0: f64, a1: f64) -> Vec<Seg> {
         .map(|i| {
             let s0 = a0 + sweep * i as f64 / n as f64;
             let s1 = a0 + sweep * (i + 1) as f64 / n as f64;
-            Seg::new(pt(s0), pt(s1), ((s1 - s0) / 4.0).tan())
+            Fitted::exact(Seg::new(pt(s0), pt(s1), ((s1 - s0) / 4.0).tan()))
         })
         .collect()
 }
 
 enum Converted {
-    Segs(Vec<Seg>, bool),
+    Segs(Vec<Fitted>, bool),
     Circle(P, f64),
 }
 
@@ -519,7 +586,7 @@ fn convert_entity(e: &Entity, tol: f64) -> Converted {
     let mut segs = Vec::new();
     // straight polyline spans in a row are fitted together: they may be a tessellated arc
     let mut run: Vec<P> = Vec::new();
-    let flush = |run: &mut Vec<P>, segs: &mut Vec<Seg>| {
+    let flush = |run: &mut Vec<P>, segs: &mut Vec<Fitted>| {
         if run.len() >= 2 {
             segs.extend(fit_points(run, tol));
         }
@@ -543,11 +610,11 @@ fn convert_entity(e: &Entity, tol: f64) -> Converted {
 }
 
 /// Segments within the tolerance of one span (a straight polyline span is fitted as part of a run).
-fn fit_span(span: &Span, tol: f64, segs: &mut Vec<Seg>) {
+fn fit_span(span: &Span, tol: f64, segs: &mut Vec<Fitted>) {
     match *span {
         Span::Line { a, b } => {
             if a.dist(b) > negligible(tol) {
-                segs.push(Seg::new(a, b, 0.0));
+                segs.push(Fitted::exact(Seg::new(a, b, 0.0)));
             }
         }
         Span::Arc { c, r, a0, a1 } => segs.extend(arc_segs(c, r, a0, a1)),
@@ -567,7 +634,7 @@ fn fit_span(span: &Span, tol: f64, segs: &mut Vec<Seg>) {
                 // split big arcs into segments of at most 90 degrees for robust merging
                 match s.arc() {
                     Some(ai) if ai.sweep.abs() > PI / 2.0 + 1e-9 => segs.extend(arc_segs(ai.c, ai.r, ai.a0, ai.a0 + ai.sweep)),
-                    _ => segs.push(s),
+                    _ => segs.push(Fitted::exact(s)),
                 }
             }
         }
@@ -578,27 +645,11 @@ fn fit_span(span: &Span, tol: f64, segs: &mut Vec<Seg>) {
 
 // ---------------------------------------------------------------- merging
 
-const MAX_SUPPORT: usize = 400;
-
-fn merged_support(a: &Seg, b: &Seg) -> Vec<P> {
-    let mut v = Vec::with_capacity(a.support.len() + b.support.len());
-    v.extend_from_slice(&a.support);
-    v.extend_from_slice(&b.support);
-    while v.len() > MAX_SUPPORT {
-        // keep endpoints, decimate the rest
-        let last = *v.last().unwrap();
-        v = v.iter().step_by(2).copied().collect();
-        if v.last() != Some(&last) {
-            v.push(last);
-        }
-    }
-    v
-}
-
-fn try_merge(s1: &Seg, s2: &Seg, tol: f64) -> Option<Seg> {
+fn try_merge(f1: &Fitted, f2: &Fitted, tol: f64) -> Option<Fitted> {
+    let (s1, s2) = (&f1.seg, &f2.seg);
     let l1 = s1.is_line();
     let l2 = s2.is_line();
-    let sup = merged_support(s1, s2);
+    let sup = Fitted::merged_original(f1, f2);
     let cand = if l1 && l2 {
         if (s1.b - s1.a).dot(s2.b - s2.a) <= 0.0 {
             return None;
@@ -606,7 +657,7 @@ fn try_merge(s1: &Seg, s2: &Seg, tol: f64) -> Option<Seg> {
         if s1.a.dist(s2.b) <= tol {
             return None;
         }
-        Seg::with_support(s1.a, s2.b, 0.0, Vec::new())
+        Seg::new(s1.a, s2.b, 0.0)
     } else if !l1 && !l2 {
         if s1.bulge.signum() != s2.bulge.signum() {
             return None;
@@ -621,7 +672,7 @@ fn try_merge(s1: &Seg, s2: &Seg, tol: f64) -> Option<Seg> {
         }
         let bu0 = (total / 4.0).tan();
         let (bu, _) = best_arc(s1.a, s2.b, bu0, &sup, tol);
-        Seg::with_support(s1.a, s2.b, bu, Vec::new())
+        Seg::new(s1.a, s2.b, bu)
     } else {
         // one arc + one (short) line: absorb the line into the arc if it lies on the same circle
         let arc_seg = if l1 { s2 } else { s1 };
@@ -634,45 +685,45 @@ fn try_merge(s1: &Seg, s2: &Seg, tol: f64) -> Option<Seg> {
             return None;
         }
         let (bu, _) = best_arc(s1.a, s2.b, bu0, &sup, tol);
-        Seg::with_support(s1.a, s2.b, bu, Vec::new())
+        Seg::new(s1.a, s2.b, bu)
     };
     // validate both ways
-    if sup.iter().any(|q| cand.dist_to(*q) > tol) {
+    let merged = Fitted::new(cand, sup);
+    if !merged.traces_original(tol) {
         return None;
     }
-    let pair = [s1.clone(), s2.clone()];
-    if cand.samples(12).iter().any(|q| dist_to_segs(*q, &pair) > tol) {
+    if cand.samples(12).iter().any(|q| dist_to_segs(*q, [s1, s2]) > tol) {
         return None;
     }
-    Some(Seg { support: sup, ..cand })
+    Some(merged)
 }
 
 impl Path {
     /// Drops negligible lines and merges collinear lines / co-circular arcs.
     fn simplify(&mut self, tol: f64) {
         let tiny = negligible(tol);
-        let mut out: Vec<Seg> = Vec::with_capacity(self.segs.len());
+        let mut out: Vec<Fitted> = Vec::with_capacity(self.segs.len());
         // start of a dropped leading piece, handed to the next kept segment
         let mut carried_start: Option<P> = None;
-        for mut s in self.segs.drain(..) {
-            if s.chord() <= tiny && s.is_line() {
+        for mut f in self.segs.drain(..) {
+            if f.seg.chord() <= tiny && f.seg.is_line() {
                 // drop, but keep continuity
                 match out.last_mut() {
-                    Some(last) => last.b = s.b,
-                    None => carried_start = carried_start.or(Some(s.a)),
+                    Some(last) => last.seg.b = f.seg.b,
+                    None => carried_start = carried_start.or(Some(f.seg.a)),
                 }
                 continue;
             }
             if let Some(a) = carried_start.take() {
-                s.a = a;
+                f.seg.a = a;
             }
             if let Some(last) = out.last() {
-                if let Some(m) = try_merge(last, &s, tol) {
+                if let Some(m) = try_merge(last, &f, tol) {
                     *out.last_mut().unwrap() = m;
                     continue;
                 }
             }
-            out.push(s);
+            out.push(f);
         }
         if self.closed {
             while out.len() >= 2 {
@@ -694,7 +745,7 @@ impl Path {
         if !self.closed || self.segs.is_empty() {
             return None;
         }
-        let infos: Vec<ArcInfo> = self.segs.iter().filter_map(|s| s.arc()).collect();
+        let infos: Vec<ArcInfo> = self.segs().filter_map(|s| s.arc()).collect();
         if infos.is_empty() {
             return None;
         }
@@ -706,8 +757,8 @@ impl Path {
         let c = infos.iter().fold(p(0.0, 0.0), |acc, ai| acc + ai.c * (ai.r * ai.sweep.abs())) * (1.0 / wsum);
         // best-fit radius around that center (min-max of all original samples)
         let (mut dmin, mut dmax) = (f64::INFINITY, 0.0f64);
-        for s in &self.segs {
-            for q in s.support.iter().chain([&s.a, &s.b]) {
+        for f in &self.segs {
+            for q in f.original.iter().chain([&f.seg.a, &f.seg.b]) {
                 let d = q.dist(c);
                 dmin = dmin.min(d);
                 dmax = dmax.max(d);
@@ -720,7 +771,8 @@ impl Path {
         let r_avg = infos.iter().map(|ai| ai.r * ai.sweep.abs()).sum::<f64>() / infos.iter().map(|ai| ai.sweep.abs()).sum::<f64>();
         let r = if (dmax - r_avg).abs().max((r_avg - dmin).abs()) <= tol * 0.5 { r_avg } else { (dmax + dmin) / 2.0 };
         let mut total = 0.0;
-        for s in &self.segs {
+        for f in &self.segs {
+            let s = &f.seg;
             if s.is_line() {
                 let half = s.chord() / 2.0;
                 if half > r || r - (r * r - half * half).sqrt() > tol {
@@ -731,7 +783,7 @@ impl Path {
                 total += s.sweep();
             }
             // verify against the original samples
-            for q in s.support.iter().chain([&s.a, &s.b]) {
+            for q in f.original.iter().chain([&s.a, &s.b]) {
                 if (q.dist(c) - r).abs() > tol {
                     return None;
                 }
@@ -813,7 +865,7 @@ fn join_paths(paths: Vec<Path>, lim: Limits) -> Vec<Path> {
 }
 
 /// Joins two runs of segments where `left`'s last segment ends near `right`'s first start.
-fn join_segs(mut left: Vec<Seg>, right: Vec<Seg>, tol: f64) -> Vec<Seg> {
+fn join_segs(mut left: Vec<Fitted>, right: Vec<Fitted>, tol: f64) -> Vec<Fitted> {
     let mut right = right.into_iter();
     match (left.pop(), right.next()) {
         (Some(l), Some(r)) => left.extend(meet(l, r, tol)),
@@ -828,43 +880,33 @@ fn join_segs(mut left: Vec<Seg>, right: Vec<Seg>, tol: f64) -> Vec<Seg> {
 /// Otherwise neither moves and a straight bridge fills the gap, so the path stays continuous
 /// and the original geometry stays exactly where it was.
 /// Returns `[left, right]` or `[left, bridge, right]`.
-fn meet(left: Seg, right: Seg, tol: f64) -> Vec<Seg> {
-    let gap = left.b.dist(right.a);
+fn meet(left: Fitted, right: Fitted, tol: f64) -> Vec<Fitted> {
+    let gap = left.seg.b.dist(right.seg.a);
     if gap == 0.0 {
         return vec![left, right];
     }
-    let m = left.b.lerp(right.a, 0.5);
-    let l2 = Seg { b: m, ..left.clone() };
-    let r2 = Seg { a: m, ..right.clone() };
-    if gap <= negligible(tol) || (stays_near(&l2, &left, tol) && stays_near(&r2, &right, tol)) {
+    let m = left.seg.b.lerp(right.seg.a, 0.5);
+    let l2 = Fitted::new(Seg { b: m, ..left.seg }, left.original.clone());
+    let r2 = Fitted::new(Seg { a: m, ..right.seg }, right.original.clone());
+    if gap <= negligible(tol) || (stays_near(&l2, &left.seg, tol) && stays_near(&r2, &right.seg, tol)) {
         vec![l2, r2]
     } else {
-        let b = bridge(left.b, right.a);
+        let b = bridge(left.seg.b, right.seg.a);
         vec![left, b, right]
     }
 }
 
-/// Whether `moved` still traces `original` within `tol`: the original's support samples lie on
-/// `moved`, and `moved` lies on the original segment.
-fn stays_near(moved: &Seg, original: &Seg, tol: f64) -> bool {
-    moved.support.iter().all(|q| moved.dist_to(*q) <= tol)
-        && moved.samples(if moved.is_line() { 1 } else { 16 }).iter().all(|q| original.dist_to(*q) <= tol)
+/// Whether `moved` still traces `original` within `tol`: its original samples lie on `moved`,
+/// and `moved` lies on the original segment.
+fn stays_near(moved: &Fitted, original: &Seg, tol: f64) -> bool {
+    let s = &moved.seg;
+    moved.traces_original(tol) && s.samples(if s.is_line() { 1 } else { 16 }).iter().all(|q| original.dist_to(*q) <= tol)
 }
 
-/// A straight segment that fills a gap; its support is its own ends, so later merges keep it honest.
-fn bridge(a: P, b: P) -> Seg {
-    Seg::with_support(a, b, 0.0, vec![a, b])
-}
-
-/// `s` split at its midpoint, each half keeping the support samples nearest to it.
-fn halves(s: &Seg) -> (Seg, Seg) {
-    let m = s.midpoint();
-    let bulge = (s.bulge.atan() / 2.0).tan();
-    let (mut h1, mut h2) = (Seg::with_support(s.a, m, bulge, Vec::new()), Seg::with_support(m, s.b, bulge, Vec::new()));
-    let (sup1, sup2): (Vec<P>, Vec<P>) = s.support.iter().partition(|q| h1.dist_to(**q) <= h2.dist_to(**q));
-    h1.support = sup1;
-    h2.support = sup2;
-    (h1, h2)
+/// A straight segment that fills a gap; its original samples are its own ends, so later merges
+/// keep it honest.
+fn bridge(a: P, b: P) -> Fitted {
+    Fitted::new(Seg::new(a, b, 0.0), vec![a, b])
 }
 
 // ---------------------------------------------------------------- duplicates
@@ -957,9 +999,9 @@ pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
     // 5. deviation report
     for s in &shapes {
         if let Shape::Path(path) = s {
-            for seg in &path.segs {
-                for q in &seg.support {
-                    stats.max_deviation = stats.max_deviation.max(seg.dist_to(*q));
+            for f in &path.segs {
+                for q in &f.original {
+                    stats.max_deviation = stats.max_deviation.max(f.seg.dist_to(*q));
                 }
             }
         }
@@ -991,7 +1033,7 @@ pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
                 } else {
                     stats.open_paths += 1;
                 }
-                for seg in &p.segs {
+                for seg in p.segs() {
                     if seg.is_line() {
                         stats.lines += 1;
                     } else {
@@ -1106,11 +1148,13 @@ mod tests {
         assert_eq!(res.stats.circles, 1, "{:?}", res.stats);
         assert_eq!(res.stats.open_paths, 1, "{:?}", res.stats);
         assert!(res.stats.max_deviation <= opt.tolerance + 1e-9, "{:?}", res.stats);
+        // arcs only approximate the free-form curve, and the report must say by how much
+        assert!(res.stats.max_deviation > 0.0, "{:?}", res.stats);
         // free-form curve: arcs only, tangent-continuous
         let path = res.shapes.iter().find_map(|s| if let Shape::Path(p) = s { Some(p) } else { None }).unwrap();
         assert!(path.segs.len() < 40, "too many segments: {}", path.segs.len());
         for w in path.segs.windows(2) {
-            let turn = signed_angle(w[0].end_tangent(), w[1].start_tangent()).abs();
+            let turn = signed_angle(w[0].seg.end_tangent(), w[1].seg.start_tangent()).abs();
             assert!(turn < 0.05, "kink of {turn} rad");
         }
     }
@@ -1183,7 +1227,7 @@ mod tests {
         for s in &res.shapes {
             if let Shape::Path(path) = s {
                 assert_exactly_closed(path);
-                assert!(path.segs.iter().all(|s| s.chord() > 0.0));
+                assert!(path.segs().all(|s| s.chord() > 0.0));
             }
         }
     }
@@ -1192,7 +1236,7 @@ mod tests {
         assert!(path.closed);
         assert_eq!(path.end(), path.start(), "closed path must end where it starts");
         for w in path.segs.windows(2) {
-            assert_eq!(w[0].b, w[1].a, "segments must be continuous");
+            assert_eq!(w[0].seg.b, w[1].seg.a, "segments must be continuous");
         }
     }
 
@@ -1230,7 +1274,7 @@ mod tests {
         let path = only_path(&res);
         assert_exactly_closed(path);
         // meeting halfway would have cut the corner; the bridge keeps (0,0) as a vertex
-        assert!(path.segs.iter().any(|s| s.a == a), "corner moved: {:?}", path.segs);
+        assert!(path.segs().any(|s| s.a == a), "corner moved: {:?}", path.segs);
     }
 
     #[test]
@@ -1250,11 +1294,11 @@ mod tests {
     fn lone_segment_closes_exactly() {
         let r = 10.0;
         let arc = Seg::new(on_circle(r, 0.0), on_circle(r, 359.0), (359f64.to_radians() / 4.0).tan());
-        for seg in [arc.clone(), Seg { b: arc.a + p(1e-6, 0.0), ..arc.clone() }] {
-            let mut path = Path { segs: vec![seg], closed: false, layer: "0".into() };
+        for seg in [arc, Seg { b: arc.a + p(1e-6, 0.0), ..arc }] {
+            let mut path = Path { segs: vec![Fitted::exact(seg)], closed: false, layer: "0".into() };
             path.close(0.05);
             assert_exactly_closed(&path);
-            assert!(path.segs.iter().all(|s| s.chord() > 0.0), "{:?}", path.segs);
+            assert!(path.segs().all(|s| s.chord() > 0.0), "{:?}", path.segs);
         }
     }
 
@@ -1278,6 +1322,124 @@ mod tests {
             .collect();
         circles.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
         assert_eq!(circles, vec![(c, r), (c + p(100.0, 0.0), r), (c + p(200.0, 0.0), r)]);
+    }
+
+    /// A quarter of the circle of radius 10 around the origin, counter-clockwise from (10, 0).
+    fn quarter_arc() -> Seg {
+        Seg::new(p(10.0, 0.0), p(0.0, 10.0), (PI / 8.0).tan())
+    }
+
+    #[test]
+    fn exact_segments_sample_their_own_geometry() {
+        let line = Fitted::exact(Seg::new(p(0.0, 0.0), p(4.0, 0.0), 0.0));
+        assert_eq!(line.original, vec![p(0.0, 0.0), p(2.0, 0.0), p(4.0, 0.0)]);
+        let arc = Fitted::exact(quarter_arc());
+        assert_eq!(arc.original.len(), 9);
+        assert!(arc.original[0].dist(arc.seg.a) < 1e-9 && arc.original[8].dist(arc.seg.b) < 1e-9, "{:?}", arc.original);
+        assert!(arc.original.iter().all(|q| (q.len() - 10.0).abs() < 1e-9), "{:?}", arc.original);
+    }
+
+    #[test]
+    fn reversed_runs_the_original_samples_backwards() {
+        let f = Fitted::exact(quarter_arc());
+        let r = f.reversed();
+        assert_eq!((r.seg.a, r.seg.b, r.seg.bulge), (f.seg.b, f.seg.a, -f.seg.bulge));
+        let mut back = r.original.clone();
+        back.reverse();
+        assert_eq!(back, f.original);
+    }
+
+    #[test]
+    fn translate_moves_geometry_and_original_samples_together() {
+        let before = Fitted::exact(quarter_arc());
+        let d = p(3.0, -2.0);
+        let mut f = before.clone();
+        f.translate(d);
+        assert_eq!((f.seg.a, f.seg.b, f.seg.bulge), (before.seg.a + d, before.seg.b + d, before.seg.bulge));
+        assert_eq!(f.original, before.original.iter().map(|q| *q + d).collect::<Vec<P>>());
+    }
+
+    #[test]
+    fn halves_give_each_original_sample_to_the_nearest_half() {
+        let f = Fitted::exact(quarter_arc());
+        let (h1, h2) = f.halves();
+        assert_eq!((h1.seg.a, h1.seg.b, h2.seg.b), (f.seg.a, h2.seg.a, f.seg.b));
+        assert_eq!(h1.original.len() + h2.original.len(), f.original.len());
+        for q in &f.original {
+            let (in1, in2) = (h1.original.contains(q), h2.original.contains(q));
+            assert!(in1 != in2, "{q:?} must be in exactly one half");
+            let (d1, d2) = (h1.seg.dist_to(*q), h2.seg.dist_to(*q));
+            assert!(if in1 { d1 <= d2 } else { d2 < d1 }, "{q:?} went to the further half");
+        }
+    }
+
+    #[test]
+    fn merged_original_samples_are_thinned_but_keep_both_ends() {
+        let run = |x0: f64| -> Fitted {
+            let pts: Vec<P> = (0..300).map(|i| p(x0 + i as f64, 0.0)).collect();
+            Fitted::new(Seg::new(pts[0], pts[299], 0.0), pts)
+        };
+        let m = Fitted::merged_original(&run(0.0), &run(300.0));
+        assert!(m.len() <= MAX_ORIGINAL, "{} samples", m.len());
+        assert_eq!((m[0], *m.last().unwrap()), (p(0.0, 0.0), p(599.0, 0.0)));
+    }
+
+    #[test]
+    fn traces_original_fails_for_a_far_or_unmeasurable_sample() {
+        let mut f = Fitted::exact(Seg::new(p(0.0, 0.0), p(10.0, 0.0), 0.0));
+        assert!(f.traces_original(0.05));
+        f.original.push(p(5.0, 0.06));
+        assert!(!f.traces_original(0.05));
+        f.original.pop();
+        f.original.push(p(f64::NAN, 0.0));
+        assert!(!f.traces_original(0.05));
+    }
+
+    #[test]
+    fn biarc_samples_run_from_each_arc_start_to_its_end() {
+        let segs = [Seg::new(p(0.0, 0.0), p(5.0, 0.0), 0.0), Seg::new(p(5.0, 0.0), p(10.0, 0.0), 0.0)];
+        let fitted = assign_original(&segs, &[p(1.0, 0.0), p(7.0, 0.0)]);
+        let originals: Vec<&[P]> = fitted.iter().map(|f| f.original.as_slice()).collect();
+        assert_eq!(originals, [[p(0.0, 0.0), p(1.0, 0.0), p(5.0, 0.0)], [p(5.0, 0.0), p(7.0, 0.0), p(10.0, 0.0)]]);
+    }
+
+    /// Two lines whose ends are 0.06 apart in y, and the left line's original samples. The ends
+    /// can meet halfway (0.03 each) without the lines themselves leaving the tolerance (0.05).
+    fn lines_across_a_gap(left_original: Vec<P>) -> (Fitted, Fitted) {
+        let left = Fitted::new(Seg::new(p(0.0, 0.0), p(10.0, 0.0), 0.0), left_original);
+        (left, Fitted::exact(Seg::new(p(10.0, 0.06), p(20.0, 0.06), 0.0)))
+    }
+
+    #[test]
+    fn meeting_halfway_keeps_the_original_samples() {
+        let original = vec![p(0.0, 0.0), p(9.0, 0.02), p(10.0, 0.0)];
+        let (left, right) = lines_across_a_gap(original.clone());
+        let met = meet(left, right.clone(), 0.05);
+        assert_eq!(met.len(), 2, "expected the ends to meet: {met:?}");
+        assert_eq!((met[0].seg.b, met[1].seg.a), (p(10.0, 0.03), p(10.0, 0.03)));
+        assert_eq!((&met[0].original, &met[1].original), (&original, &right.original));
+    }
+
+    #[test]
+    fn ends_do_not_meet_when_an_original_sample_would_stray() {
+        // (9, -0.04) is within tolerance of the left line, but 0.067 from it once its end moves up
+        let (left, right) = lines_across_a_gap(vec![p(0.0, 0.0), p(9.0, -0.04), p(10.0, 0.0)]);
+        let met = meet(left, right, 0.05);
+        assert_eq!(met.len(), 3, "expected a bridge: {met:?}");
+        assert_eq!((met[0].seg.b, met[2].seg.a), (p(10.0, 0.0), p(10.0, 0.06)), "original ends moved");
+    }
+
+    #[test]
+    fn merge_is_refused_when_an_original_sample_would_stray() {
+        // two lines with a 0.04 kink: the straight line over both stays within 0.05 of them
+        let kink = |off_sample: P| {
+            let f1 = Fitted::new(Seg::new(p(0.0, 0.0), p(10.0, 0.04), 0.0), vec![p(0.0, 0.0), off_sample, p(10.0, 0.04)]);
+            let f2 = Fitted::exact(Seg::new(p(10.0, 0.04), p(20.0, 0.0), 0.0));
+            try_merge(&f1, &f2, 0.05)
+        };
+        assert!(kink(p(5.0, 0.02)).is_some(), "samples on the lines must allow the merge");
+        // (5, 0.06) is within tolerance of the first line, but 0.06 from the merged line
+        assert!(kink(p(5.0, 0.06)).is_none());
     }
 
     #[test]
