@@ -5,6 +5,7 @@ mod canvas;
 mod empty;
 mod export_dialog;
 mod icons;
+mod logo;
 mod notice;
 mod result_strip;
 mod settings;
@@ -15,7 +16,7 @@ mod widgets;
 use canvas::View;
 use dxf_cleaner::geom::{BBox, P};
 use dxf_cleaner::*;
-use eframe::egui::{self, Rect, TextureHandle, UiBuilder, Vec2};
+use eframe::egui::{self, Rect, UiBuilder, Vec2};
 use export_dialog::ExportWarning;
 use notice::Notice;
 use std::path::PathBuf;
@@ -41,16 +42,11 @@ pub struct App {
     fit_to: Option<BBox>,
     notice: Option<Notice>,
     export_warning: Option<ExportWarning>,
-    icon: Option<TextureHandle>,
+    logo: logo::Logo,
 }
 
 impl App {
-    pub fn new(ctx: &egui::Context) -> Self {
-        let icon = eframe::icon_data::from_png_bytes(ICON_PNG).ok().map(|d| {
-            let img = egui::ColorImage::from_rgba_unmultiplied([d.width as usize, d.height as usize], &d.rgba);
-            let opts = egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR };
-            ctx.load_texture("app-icon", img, opts)
-        });
+    pub fn new() -> Self {
         App {
             job: None,
             before: Before::default(),
@@ -65,7 +61,7 @@ impl App {
             fit_to: None,
             notice: None,
             export_warning: None,
-            icon,
+            logo: logo::Logo::default(),
         }
     }
 

@@ -21,7 +21,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             app::theme::apply(&cc.egui_ctx);
-            let mut app = app::App::new(&cc.egui_ctx);
+            let mut app = app::App::new();
             if let Some(f) = start_file {
                 app.load(f);
             }
