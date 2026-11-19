@@ -14,6 +14,10 @@ _Avoid_: Fix, optimise
 One straight line or one true circular arc.
 _Avoid_: Piece, edge, element
 
+**Span**:
+One stretch of an entity's original geometry described by one formula: a line, an arc, part of an ellipse, one span of a spline, or a run of fit points. Clean Up replaces each span with segments.
+_Avoid_: Piece
+
 **Path**:
 A continuous run of segments on one layer, each starting exactly where the previous one ends.
 _Avoid_: Polyline (that is one DXF way of writing a Path), contour, chain

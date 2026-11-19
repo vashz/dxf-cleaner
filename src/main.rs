@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use dxf_converter::clean::{entity_outline, Path as CPath};
+use dxf_converter::clean::Path as CPath;
 use dxf_converter::geom::{BBox, P};
+use dxf_converter::spans::{outline, Outline};
 use dxf_converter::*;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use std::path::PathBuf;
@@ -38,11 +39,6 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
-}
-
-struct Outline {
-    pts: Vec<P>,
-    nodes: Vec<P>,
 }
 
 #[derive(Clone, Copy)]
@@ -94,14 +90,7 @@ impl App {
     fn load(&mut self, path: PathBuf) {
         match read_file(&path) {
             Ok(dwg) => {
-                self.before = dwg
-                    .entities
-                    .iter()
-                    .map(|e| {
-                        let (pts, nodes) = entity_outline(e);
-                        Outline { pts, nodes }
-                    })
-                    .collect();
+                self.before = dwg.entities.iter().map(|e| outline(&e.geom)).collect();
                 self.before_nodes = self.before.iter().map(|o| o.nodes.len()).sum();
                 let mut bb = BBox::empty();
                 for o in &self.before {

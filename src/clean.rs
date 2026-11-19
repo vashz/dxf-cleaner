@@ -2,8 +2,9 @@
 //! the fewest straight lines and true circular arcs within a tolerance,
 //! joins touching pieces into continuous paths and removes duplicates.
 
-use crate::dxf_read::{Drawing, Entity, Geom};
+use crate::dxf_read::{Drawing, Entity};
 use crate::geom::*;
+use crate::spans::Span;
 use std::f64::consts::PI;
 
 #[derive(Clone, Debug)]
@@ -490,44 +491,6 @@ pub fn fit_points(pts: &[P], tol: f64) -> Vec<Seg> {
     out
 }
 
-// ---------------------------------------------------------------- NURBS
-
-struct Nurbs<'a> {
-    p: usize,
-    k: &'a [f64],
-    c: &'a [P],
-    w: &'a [f64],
-}
-
-impl Nurbs<'_> {
-    fn eval_span(&self, span: usize, t: f64) -> P {
-        let p = self.p;
-        let mut d: Vec<[f64; 3]> = (0..=p)
-            .map(|j| {
-                let i = j + span - p;
-                let w = self.w[i];
-                [self.c[i].x * w, self.c[i].y * w, w]
-            })
-            .collect();
-        for r in 1..=p {
-            for j in (r..=p).rev() {
-                let i0 = j + span - p;
-                let den = self.k[j + 1 + span - r] - self.k[i0];
-                let alpha = if den.abs() < 1e-300 { 0.0 } else { (t - self.k[i0]) / den };
-                for c in 0..3 {
-                    d[j][c] = (1.0 - alpha) * d[j - 1][c] + alpha * d[j][c];
-                }
-            }
-        }
-        let h = d[p];
-        if h[2].abs() < 1e-300 { crate::geom::p(h[0], h[1]) } else { crate::geom::p(h[0] / h[2], h[1] / h[2]) }
-    }
-    fn spans(&self) -> Vec<(usize, f64, f64)> {
-        let n = self.c.len();
-        (self.p..n).filter(|&s| self.k[s + 1] > self.k[s]).map(|s| (s, self.k[s], self.k[s + 1])).collect()
-    }
-}
-
 // ---------------------------------------------------------------- entity -> segments
 
 fn arc_segs(c: P, r: f64, a0: f64, a1: f64) -> Vec<Seg> {
@@ -546,93 +509,70 @@ fn arc_segs(c: P, r: f64, a0: f64, a1: f64) -> Vec<Seg> {
 enum Converted {
     Segs(Vec<Seg>, bool),
     Circle(P, f64),
-    None,
 }
 
 fn convert_entity(e: &Entity, tol: f64) -> Converted {
-    match &e.geom {
-        Geom::Line { a, b } => {
-            if a.dist(*b) <= negligible(tol) {
-                Converted::None
-            } else {
-                Converted::Segs(vec![Seg::new(*a, *b, 0.0)], false)
+    let spans = e.geom.spans();
+    if let Some((c, r)) = spans.circle() {
+        return Converted::Circle(c, r);
+    }
+    let mut segs = Vec::new();
+    // straight polyline spans in a row are fitted together: they may be a tessellated arc
+    let mut run: Vec<P> = Vec::new();
+    let flush = |run: &mut Vec<P>, segs: &mut Vec<Seg>| {
+        if run.len() >= 2 {
+            segs.extend(fit_points(run, tol));
+        }
+        run.clear();
+    };
+    for span in &spans.spans {
+        if let Span::Bulge { a, b, bulge } = *span {
+            if bulge.abs() < LINE_BULGE_EPS {
+                if run.is_empty() {
+                    run.push(a);
+                }
+                run.push(b);
+                continue;
             }
         }
-        Geom::Circle { c, r } => Converted::Circle(*c, *r),
-        Geom::Arc { c, r, a0, a1 } => {
-            if a1 - a0 >= 2.0 * PI - 1e-9 {
-                Converted::Circle(*c, *r)
-            } else {
-                Converted::Segs(arc_segs(*c, *r, *a0, *a1), false)
+        flush(&mut run, &mut segs);
+        fit_span(span, tol, &mut segs);
+    }
+    flush(&mut run, &mut segs);
+    Converted::Segs(segs, spans.closed)
+}
+
+/// Segments within the tolerance of one span (a straight polyline span is fitted as part of a run).
+fn fit_span(span: &Span, tol: f64, segs: &mut Vec<Seg>) {
+    match *span {
+        Span::Line { a, b } => {
+            if a.dist(b) > negligible(tol) {
+                segs.push(Seg::new(a, b, 0.0));
             }
         }
-        Geom::Ellipse { c, u, v, t0, t1 } => {
-            let full = t1 - t0 >= 2.0 * PI - 1e-9;
-            let circ = ((u.len() - v.len()).abs() <= 1e-9 * u.len()) && u.dot(*v).abs() <= 1e-9 * u.len() * v.len();
-            if full && circ {
-                return Converted::Circle(*c, u.len());
-            }
-            let f = |t: f64| *c + *u * t.cos() + *v * t.sin();
+        Span::Arc { c, r, a0, a1 } => segs.extend(arc_segs(c, r, a0, a1)),
+        Span::Circle { c, r } => segs.extend(arc_segs(c, r, 0.0, 2.0 * PI)),
+        Span::Ellipse { t0, t1, .. } => {
+            let f = |t: f64| span.at(t);
             let n = ((t1 - t0) / (PI / 2.0)).ceil().max(1.0) as usize;
-            let mut segs = Vec::new();
             for i in 0..n {
                 let s0 = t0 + (t1 - t0) * i as f64 / n as f64;
                 let s1 = t0 + (t1 - t0) * (i + 1) as f64 / n as f64;
-                fit_parametric(&f, s0, s1, tol, 0, &mut segs);
+                fit_parametric(&f, s0, s1, tol, 0, segs);
             }
-            Converted::Segs(segs, full)
         }
-        Geom::Poly { pts, bulges, closed } => {
-            let n = pts.len();
-            let nseg = if *closed { n } else { n - 1 };
-            let mut segs = Vec::new();
-            let mut run: Vec<P> = Vec::new();
-            let flush = |run: &mut Vec<P>, segs: &mut Vec<Seg>| {
-                if run.len() >= 2 {
-                    segs.extend(fit_points(run, tol));
-                }
-                run.clear();
-            };
-            for k in 0..nseg {
-                let a = pts[k];
-                let b = pts[(k + 1) % n];
-                let bu = bulges.get(k).copied().unwrap_or(0.0);
-                if bu.abs() < LINE_BULGE_EPS {
-                    if run.is_empty() {
-                        run.push(a);
-                    }
-                    run.push(b);
-                } else {
-                    flush(&mut run, &mut segs);
-                    if a.dist(b) > negligible(tol) {
-                        let s = Seg::new(a, b, bu);
-                        // split big arcs into <= 90 degree pieces for robust merging
-                        if let Some(ai) = s.arc() {
-                            if ai.sweep.abs() > PI / 2.0 + 1e-9 {
-                                segs.extend(arc_segs(ai.c, ai.r, ai.a0, ai.a0 + ai.sweep));
-                                continue;
-                            }
-                        }
-                        segs.push(s);
-                    }
+        Span::Bulge { a, b, bulge } => {
+            if a.dist(b) > negligible(tol) {
+                let s = Seg::new(a, b, bulge);
+                // split big arcs into <= 90 degree pieces for robust merging
+                match s.arc() {
+                    Some(ai) if ai.sweep.abs() > PI / 2.0 + 1e-9 => segs.extend(arc_segs(ai.c, ai.r, ai.a0, ai.a0 + ai.sweep)),
+                    _ => segs.push(s),
                 }
             }
-            flush(&mut run, &mut segs);
-            Converted::Segs(segs, *closed)
         }
-        Geom::Spline { degree, knots, ctrl, weights, fit, closed } => {
-            let mut segs = Vec::new();
-            if !ctrl.is_empty() {
-                let nb = Nurbs { p: *degree, k: knots, c: ctrl, w: weights };
-                for (span, ka, kb) in nb.spans() {
-                    let f = |t: f64| nb.eval_span(span, t);
-                    fit_parametric(&f, ka, kb, tol, 0, &mut segs);
-                }
-            } else {
-                segs = fit_points(fit, tol);
-            }
-            Converted::Segs(segs, *closed)
-        }
+        Span::Nurbs { t0, t1, .. } => fit_parametric(&|t: f64| span.at(t), t0, t1, tol, 0, segs),
+        Span::FitPoints(pts) => segs.extend(fit_points(pts, tol)),
     }
 }
 
@@ -976,7 +916,6 @@ pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
                 }
                 shapes.push(Shape::Path(Path::from_entity(segs, closed, layer_of(e), lim)));
             }
-            Converted::None => {}
         }
     }
 
@@ -1068,62 +1007,6 @@ pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
 /// Lengths and gaps at or below this are treated as zero (a thousandth of the tolerance).
 fn negligible(tol: f64) -> f64 {
     tol * 1e-3
-}
-
-/// Sampled outline of a source entity, for the "before" preview.
-/// Returns (polyline, nodes) where nodes are the points a cutter would treat as vertices.
-pub fn entity_outline(e: &Entity) -> (Vec<P>, Vec<P>) {
-    match &e.geom {
-        Geom::Line { a, b } => (vec![*a, *b], vec![*a, *b]),
-        Geom::Circle { c, r } => {
-            let pts: Vec<P> = (0..=96).map(|i| *c + p((i as f64 / 96.0 * 2.0 * PI).cos(), (i as f64 / 96.0 * 2.0 * PI).sin()) * *r).collect();
-            (pts, vec![])
-        }
-        Geom::Arc { c, r, a0, a1 } => {
-            let n = 64;
-            let pts: Vec<P> = (0..=n).map(|i| {
-                let a = a0 + (a1 - a0) * i as f64 / n as f64;
-                *c + p(a.cos(), a.sin()) * *r
-            }).collect();
-            let nodes = vec![pts[0], pts[n]];
-            (pts, nodes)
-        }
-        Geom::Ellipse { c, u, v, t0, t1 } => {
-            let n = 96;
-            let pts: Vec<P> = (0..=n).map(|i| {
-                let t = t0 + (t1 - t0) * i as f64 / n as f64;
-                *c + *u * t.cos() + *v * t.sin()
-            }).collect();
-            (pts, vec![])
-        }
-        Geom::Poly { pts, bulges, closed } => {
-            let n = pts.len();
-            let nseg = if *closed { n } else { n - 1 };
-            let mut out = vec![pts[0]];
-            for k in 0..nseg {
-                let s = Seg::with_support(pts[k], pts[(k + 1) % n], bulges.get(k).copied().unwrap_or(0.0), vec![]);
-                let smp = s.samples(if s.is_line() { 1 } else { 24 });
-                out.extend_from_slice(&smp[1..]);
-            }
-            (out, pts.clone())
-        }
-        Geom::Spline { degree, knots, ctrl, weights, fit, .. } => {
-            if ctrl.is_empty() {
-                return (fit.clone(), fit.clone());
-            }
-            let nb = Nurbs { p: *degree, k: knots, c: ctrl, w: weights };
-            let mut out = Vec::new();
-            let mut nodes = Vec::new();
-            for (span, ka, kb) in nb.spans() {
-                for i in 0..=24 {
-                    out.push(nb.eval_span(span, ka + (kb - ka) * i as f64 / 24.0));
-                }
-                nodes.push(nb.eval_span(span, ka));
-            }
-            nodes.extend_from_slice(ctrl);
-            (out, nodes)
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1373,5 +1256,34 @@ mod tests {
             assert_exactly_closed(&path);
             assert!(path.segs.iter().all(|s| s.chord() > 0.0), "{:?}", path.segs);
         }
+    }
+
+    #[test]
+    fn full_circles_keep_their_exact_centre_and_radius() {
+        let c = p(12.345678901, -6.789012345);
+        let r = 7.123456789;
+        let ents = vec![
+            ent(Geom::Circle { c, r }),
+            ent(Geom::Arc { c: c + p(100.0, 0.0), r, a0: 0.3, a1: 0.3 + 2.0 * PI }),
+            ent(Geom::Ellipse { c: c + p(200.0, 0.0), u: p(0.0, r), v: p(-r, 0.0), t0: 0.0, t1: 2.0 * PI }),
+        ];
+        let res = clean(&Drawing { entities: ents, ..Default::default() }, &Options::default());
+        let mut circles: Vec<(P, f64)> = res
+            .shapes
+            .iter()
+            .map(|s| match s {
+                Shape::Circle { c, r, .. } => (*c, *r),
+                other => panic!("not a circle: {other:?}"),
+            })
+            .collect();
+        circles.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
+        assert_eq!(circles, vec![(c, r), (c + p(100.0, 0.0), r), (c + p(200.0, 0.0), r)]);
+    }
+
+    #[test]
+    fn zero_length_lines_are_dropped() {
+        let q = p(3.0, 4.0);
+        let res = clean(&Drawing { entities: vec![ent(Geom::Line { a: q, b: q })], ..Default::default() }, &Options::default());
+        assert!(res.shapes.is_empty(), "{:?}", res.shapes);
     }
 }
