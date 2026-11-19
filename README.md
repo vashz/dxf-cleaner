@@ -54,7 +54,10 @@ Runs the tests, builds everything and writes to `dist\`:
 - `nhl-dxf-converter-setup-<version>.exe`: one-file installer. Installs for the current
   Windows user only (no admin rights) to `%LOCALAPPDATA%\Programs\DXF Converter`, adds
   Desktop and Start-menu shortcuts and an "Apps & features" entry for uninstalling.
-  Running a newer setup updates in place. `/quiet` installs silently.
+  Running a newer setup updates in place; an older setup asks before downgrading (and
+  refuses in quiet mode). Setup and uninstall refuse to run while the app is open.
+  `/quiet` installs silently; `uninstall.exe /uninstall [/quiet]` (in the install folder)
+  removes it.
 - `nhl-dxf-converter-<version>-portable.zip`: unzip and run, nothing installed.
 
 The executables are not code-signed, so Windows SmartScreen may show "Windows protected
