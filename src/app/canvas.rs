@@ -159,7 +159,14 @@ impl App {
         let (title, detail) = if after {
             let detail = self.result.as_ref().map(|r| {
                 let s = &r.stats;
-                format!("clean · {} segments", thousands(s.lines + s.arcs + s.circles))
+                // A segment is a line or an arc (GLOSSARY.md); full circles are counted apart.
+                let n = s.lines + s.arcs;
+                let segments = format!("clean · {} {}", thousands(n), if n == 1 { "segment" } else { "segments" });
+                match s.circles {
+                    0 => segments,
+                    1 => format!("{segments} · 1 circle"),
+                    c => format!("{segments} · {} circles", thousands(c)),
+                }
             });
             ("AFTER", detail.unwrap_or_default())
         } else {

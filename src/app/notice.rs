@@ -46,10 +46,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, area: Rect) {
             ((INFO_SECONDS - t) / FADE_SECONDS).min(1.0)
         }
     };
-    let (fill, border, fg, icon) = match n.kind {
-        Kind::Error => (ERROR_BG, ERROR_BORDER, ERROR_TEXT, Icon::Warning),
+    let (fill, border, icon_color, icon) = match n.kind {
+        Kind::Error => (ERROR_BG, ERROR_BORDER, ERROR_ICON, Icon::Warning),
         Kind::Info => (INFO_BG, INFO_BORDER, TEXT, Icon::CheckCircle),
     };
+    let fg = TEXT;
     let width = (area.width() - 32.0).min(560.0);
     let text_w = width - 16.0 - 16.0 - 12.0 - 32.0 - 12.0;
     let galley = ui.painter().layout(n.text.clone(), FontId::proportional(13.5), fg.gamma_multiply(opacity), text_w);
@@ -58,7 +59,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, area: Rect) {
 
     let painter = ui.painter();
     painter.rect(rect, CornerRadius::same(8), fill.gamma_multiply(opacity), Stroke::new(1.0, border.gamma_multiply(opacity)), StrokeKind::Inside);
-    icons::paint(painter, icon, Rect::from_center_size(pos2(rect.left() + 24.0, rect.center().y), Vec2::splat(16.0)), fg.gamma_multiply(opacity), 2.0);
+    icons::paint(painter, icon, Rect::from_center_size(pos2(rect.left() + 24.0, rect.center().y), Vec2::splat(16.0)), icon_color.gamma_multiply(opacity), 2.0);
     painter.galley(pos2(rect.left() + 44.0, rect.center().y - galley.size().y / 2.0), galley, fg);
 
     let close = Rect::from_center_size(pos2(rect.right() - 22.0, rect.center().y), Vec2::splat(32.0));

@@ -65,14 +65,14 @@ fn count(ui: &mut egui::Ui, n: usize, what: &str) {
     ui.spacing_mut().item_spacing.x = 8.0;
 }
 
-/// "Max deviation 0.0123 / 0.050 mm" over a bar filled to deviation ÷ tolerance.
+/// "Max deviation 0.012 / 0.050 mm" over a bar filled to deviation ÷ tolerance.
 fn deviation(ui: &mut egui::Ui, dev: f64, tol: f64, units: &str) {
     ui.allocate_ui_with_layout(vec2(250.0, 36.0), Layout::top_down(Align::Min), |ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
         ui.horizontal(|ui| {
             ui.label(RichText::new("Max deviation").color(TEXT_2));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(format!("{dev:.4} / {tol:.3} {units}")).monospace().color(TEXT));
+                ui.label(RichText::new(format!("{dev:.3} / {tol:.3} {units}")).monospace().color(TEXT));
             });
         })
         .response

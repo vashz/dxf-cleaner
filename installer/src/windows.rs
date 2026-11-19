@@ -39,7 +39,7 @@ impl Host for WindowsHost {
         dir.join(EXE_NAME).exists()
     }
 
-    fn legacy_present(&self, old_dir: &Path) -> bool {
+    fn old_install_present(&self, old_dir: &Path) -> bool {
         old_dir.join(OLD_EXE_NAME).exists()
     }
 
@@ -148,7 +148,7 @@ impl Host for WindowsHost {
             .spawn();
     }
 
-    fn remove_legacy(&mut self, old_dir: &Path) -> Result<(), String> {
+    fn remove_old_install(&mut self, old_dir: &Path) -> Result<(), String> {
         let exe = old_dir.join(OLD_EXE_NAME);
         if exe.exists() {
             std::fs::remove_file(&exe).map_err(|e| format!("Could not remove {}: {e}", exe.display()))?;

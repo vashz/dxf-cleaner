@@ -32,9 +32,10 @@ pub const OPEN_BG: Color32 = Color32::from_rgb(0x3A, 0x32, 0x16);
 pub const OPEN_TEXT: Color32 = Color32::from_rgb(0xFF, 0xE2, 0x7A);
 pub const ON_OPEN: Color32 = Color32::from_rgb(0x1A, 0x15, 0x00);
 
-pub const ERROR_BG: Color32 = Color32::from_rgb(0x3A, 0x1F, 0x22);
-pub const ERROR_BORDER: Color32 = Color32::from_rgb(0x6B, 0x2B, 0x31);
-pub const ERROR_TEXT: Color32 = Color32::from_rgb(0xFF, 0xB4, 0xB4);
+// Errors: a dark red ground and a red icon, with normal text (no pink).
+pub const ERROR_BG: Color32 = Color32::from_rgb(0x36, 0x1C, 0x1C);
+pub const ERROR_BORDER: Color32 = Color32::from_rgb(0x7A, 0x2E, 0x2E);
+pub const ERROR_ICON: Color32 = Color32::from_rgb(0xFF, 0x5F, 0x56);
 pub const INFO_BG: Color32 = Color32::from_rgb(0x1F, 0x2A, 0x36);
 pub const INFO_BORDER: Color32 = Color32::from_rgb(0x2E, 0x4A, 0x66);
 

@@ -14,7 +14,7 @@ pub const OLD_APP_NAME: &str = "DXF Converter";
 pub const OLD_EXE_NAME: &str = "DXF Converter.exe";
 
 /// Where an install under the old name lives: next to `dir`, in a folder named after it.
-pub fn legacy_dir(dir: &Path) -> PathBuf {
+pub fn old_install_dir(dir: &Path) -> PathBuf {
     dir.with_file_name(OLD_APP_NAME)
 }
 
@@ -134,7 +134,7 @@ pub trait Host {
     /// Is the app's exe in `dir`?
     fn app_present(&self, dir: &Path) -> bool;
     /// Is the app installed under its old name in `old_dir`?
-    fn legacy_present(&self, old_dir: &Path) -> bool;
+    fn old_install_present(&self, old_dir: &Path) -> bool;
     /// Version recorded by a previous install, if any.
     fn installed_version(&self) -> Option<String>;
     /// Is the app open? An error means it could not be checked.
@@ -151,14 +151,14 @@ pub trait Host {
     fn schedule_folder_removal(&mut self, dir: &Path);
     /// Remove an install under the old name: its exe, its shortcuts and, once Setup has
     /// exited, its folder. The "Apps & features" entry is shared, so it stays.
-    fn remove_legacy(&mut self, old_dir: &Path) -> Result<(), String>;
+    fn remove_old_install(&mut self, old_dir: &Path) -> Result<(), String>;
 }
 
 pub fn install(host: &mut impl Host, setup: &Setup) -> Result<(), String> {
-    let old_dir = legacy_dir(&setup.dir);
-    let legacy = host.legacy_present(&old_dir);
+    let old_dir = old_install_dir(&setup.dir);
+    let old_install = host.old_install_present(&old_dir);
     // An install under the old name counts as the app being present, so it is updated.
-    let present = host.app_present(&setup.dir) || legacy;
+    let present = host.app_present(&setup.dir) || old_install;
     let installed = if present { host.installed_version() } else { None };
     let action = decide(present, installed.as_deref(), &setup.version);
 
@@ -188,7 +188,7 @@ pub fn install(host: &mut impl Host, setup: &Setup) -> Result<(), String> {
     host.register(&setup.dir, &setup.version)?;
     let shortcuts = host.create_shortcuts(&setup.dir);
     // Only once the new app is in place, so a failure here never leaves no app at all.
-    let legacy_removed = if legacy { host.remove_legacy(&old_dir) } else { Ok(()) };
+    let old_install_removed = if old_install { host.remove_old_install(&old_dir) } else { Ok(()) };
 
     if !setup.quiet {
         let q = Question::OpenNow {
@@ -200,7 +200,7 @@ pub fn install(host: &mut impl Host, setup: &Setup) -> Result<(), String> {
             host.launch(&setup.dir);
         }
     }
-    shortcuts.and(legacy_removed)
+    both(shortcuts, old_install_removed)
 }
 
 /// Refuse while the app is open. If that cannot be checked, carry on: a locked exe still
@@ -216,10 +216,10 @@ pub fn uninstall(host: &mut impl Host, setup: &Setup) -> Result<(), String> {
     ensure_closed(host)?;
     host.remove_app(&setup.dir)?;
     host.remove_shortcuts()?;
-    let old_dir = legacy_dir(&setup.dir);
-    if host.legacy_present(&old_dir) {
-        host.remove_legacy(&old_dir)?;
-    }
+    // No `?`: the app is already gone, so its "Apps & features" entry must go as well,
+    // even when the old install cannot be removed. That failure is reported at the end.
+    let old_dir = old_install_dir(&setup.dir);
+    let old_install_removed = if host.old_install_present(&old_dir) { host.remove_old_install(&old_dir) } else { Ok(()) };
     host.unregister();
     // Tell the user first: this program may live inside the install folder and keeps
     // its own file locked until it exits.
@@ -227,7 +227,15 @@ pub fn uninstall(host: &mut impl Host, setup: &Setup) -> Result<(), String> {
         host.tell(&Notice::Removed);
     }
     host.schedule_folder_removal(&setup.dir);
-    Ok(())
+    old_install_removed
+}
+
+/// Both results of steps that run whatever the other's outcome; neither error is lost.
+fn both(a: Result<(), String>, b: Result<(), String>) -> Result<(), String> {
+    match (a, b) {
+        (Ok(()), r) | (r, Ok(())) => r,
+        (Err(a), Err(b)) => Err(format!("{a}\n\n{b}")),
+    }
 }
 
 #[cfg(test)]
@@ -248,15 +256,15 @@ mod tests {
         RemoveShortcuts,
         Unregister,
         ScheduleFolderRemoval,
-        RemoveLegacy(PathBuf),
+        RemoveOldInstall(PathBuf),
     }
     use Effect::*;
 
     /// A PC that answers from a script and records every effect in order.
     struct Recording {
         present: bool,
-        legacy: bool,
-        legacy_removal: Result<(), String>,
+        old_install: bool,
+        old_install_removal: Result<(), String>,
         installed: Option<String>,
         running: Result<bool, String>,
         shortcuts: Result<(), String>,
@@ -266,7 +274,7 @@ mod tests {
 
     impl Recording {
         fn new() -> Self {
-            Recording { present: false, legacy: false, legacy_removal: Ok(()), installed: None, running: Ok(false), shortcuts: Ok(()), answers: VecDeque::new(), log: Vec::new() }
+            Recording { present: false, old_install: false, old_install_removal: Ok(()), installed: None, running: Ok(false), shortcuts: Ok(()), answers: VecDeque::new(), log: Vec::new() }
         }
         fn with_app(mut self, version: Option<&str>) -> Self {
             self.present = true;
@@ -274,8 +282,8 @@ mod tests {
             self
         }
         /// The app is installed under its old name only, at `version`.
-        fn with_legacy_app(mut self, version: &str) -> Self {
-            self.legacy = true;
+        fn with_old_install(mut self, version: &str) -> Self {
+            self.old_install = true;
             self.installed = Some(version.to_string());
             self
         }
@@ -296,8 +304,8 @@ mod tests {
         fn app_present(&self, _: &Path) -> bool {
             self.present
         }
-        fn legacy_present(&self, _: &Path) -> bool {
-            self.legacy
+        fn old_install_present(&self, _: &Path) -> bool {
+            self.old_install
         }
         fn installed_version(&self) -> Option<String> {
             self.installed.clone()
@@ -338,9 +346,9 @@ mod tests {
         fn schedule_folder_removal(&mut self, _: &Path) {
             self.log.push(ScheduleFolderRemoval);
         }
-        fn remove_legacy(&mut self, old_dir: &Path) -> Result<(), String> {
-            self.log.push(RemoveLegacy(old_dir.to_path_buf()));
-            self.legacy_removal.clone()
+        fn remove_old_install(&mut self, old_dir: &Path) -> Result<(), String> {
+            self.log.push(RemoveOldInstall(old_dir.to_path_buf()));
+            self.old_install_removal.clone()
         }
     }
 
@@ -514,13 +522,13 @@ mod tests {
 
     #[test]
     fn the_old_install_sits_next_to_the_new_one() {
-        assert_eq!(legacy_dir(&setup("0.2.0", false).dir), old_dir());
+        assert_eq!(old_install_dir(&setup("0.2.0", false).dir), old_dir());
     }
 
     #[test]
     fn an_install_under_the_old_name_is_updated_and_then_removed() {
         let s = setup("0.2.0", false);
-        let mut pc = Recording::new().with_legacy_app("0.1.4").answering(&[true, false]);
+        let mut pc = Recording::new().with_old_install("0.1.4").answering(&[true, false]);
         assert_eq!(install(&mut pc, &s), Ok(()));
         assert_eq!(
             pc.log,
@@ -530,7 +538,7 @@ mod tests {
                 CopyUninstaller,
                 Register("0.2.0".into()),
                 CreateShortcuts,
-                RemoveLegacy(old_dir()),
+                RemoveOldInstall(old_dir()),
                 open_now(&s, None)
             ]
         );
@@ -538,15 +546,15 @@ mod tests {
 
     #[test]
     fn a_failed_old_install_removal_is_reported_but_keeps_the_new_app() {
-        let mut pc = Recording::new().with_legacy_app("0.1.4");
-        pc.legacy_removal = Err("Could not remove DXF Converter.exe".into());
+        let mut pc = Recording::new().with_old_install("0.1.4");
+        pc.old_install_removal = Err("Could not remove DXF Converter.exe".into());
         assert_eq!(install(&mut pc, &setup("0.2.0", true)), Err("Could not remove DXF Converter.exe".into()));
-        assert_eq!(pc.log, [WriteApp, CopyUninstaller, Register("0.2.0".into()), CreateShortcuts, RemoveLegacy(old_dir())]);
+        assert_eq!(pc.log, [WriteApp, CopyUninstaller, Register("0.2.0".into()), CreateShortcuts, RemoveOldInstall(old_dir())]);
     }
 
     #[test]
     fn the_old_app_open_blocks_the_update() {
-        let mut pc = Recording::new().with_legacy_app("0.1.4");
+        let mut pc = Recording::new().with_old_install("0.1.4");
         pc.running = Ok(true);
         assert_eq!(install(&mut pc, &setup("0.2.0", true)), Err(close_app_message()));
         assert_eq!(pc.log, []);
@@ -555,8 +563,28 @@ mod tests {
     #[test]
     fn uninstall_also_removes_an_old_install_left_behind() {
         let mut pc = Recording::new().with_app(Some("0.2.0"));
-        pc.legacy = true;
+        pc.old_install = true;
         assert_eq!(uninstall(&mut pc, &setup("0.2.0", true)), Ok(()));
-        assert_eq!(pc.log, [RemoveApp, RemoveShortcuts, RemoveLegacy(old_dir()), Unregister, ScheduleFolderRemoval]);
+        assert_eq!(pc.log, [RemoveApp, RemoveShortcuts, RemoveOldInstall(old_dir()), Unregister, ScheduleFolderRemoval]);
+    }
+
+    #[test]
+    fn uninstall_still_removes_the_entry_when_the_old_install_cannot_be_removed() {
+        let mut pc = Recording::new().with_app(Some("0.2.0"));
+        pc.old_install = true;
+        pc.old_install_removal = Err("Could not remove DXF Converter.exe".into());
+        assert_eq!(uninstall(&mut pc, &setup("0.2.0", true)), Err("Could not remove DXF Converter.exe".into()));
+        assert_eq!(pc.log, [RemoveApp, RemoveShortcuts, RemoveOldInstall(old_dir()), Unregister, ScheduleFolderRemoval]);
+    }
+
+    #[test]
+    fn failed_shortcuts_and_old_install_removal_report_both() {
+        let mut pc = Recording::new().with_old_install("0.1.4");
+        pc.shortcuts = Err("PowerShell failed: blocked".into());
+        pc.old_install_removal = Err("Could not remove DXF Converter.exe".into());
+        assert_eq!(
+            install(&mut pc, &setup("0.2.0", true)),
+            Err("PowerShell failed: blocked\n\nCould not remove DXF Converter.exe".into())
+        );
     }
 }
