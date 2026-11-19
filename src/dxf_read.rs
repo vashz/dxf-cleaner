@@ -1,7 +1,7 @@
 //! Minimal, tolerant ASCII DXF reader. Extracts 2D cutting geometry
 //! (LINE, ARC, CIRCLE, ELLIPSE, LWPOLYLINE, POLYLINE, SPLINE, INSERT) in world coordinates.
 
-use crate::geom::{p, Affine, LINE_BULGE_EPS, P};
+use crate::geom::{bulge_is_straight, p, Affine, P};
 use crate::spans::{polyline_spans, Span};
 use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::PI;
@@ -510,7 +510,7 @@ pub fn transform_geom(g: Geom, xf: &Affine) -> Vec<Geom> {
             vec![Geom::Ellipse { c: xf.apply(c), u: xf.apply_vec(u), v: xf.apply_vec(v), t0, t1 }]
         }
         Geom::Poly { pts, bulges, closed } => {
-            let has_arcs = bulges.iter().any(|b| b.abs() >= LINE_BULGE_EPS);
+            let has_arcs = bulges.iter().any(|b| !bulge_is_straight(*b));
             if sim.is_some() || !has_arcs {
                 let sign = if mirrored { -1.0 } else { 1.0 };
                 vec![Geom::Poly {
