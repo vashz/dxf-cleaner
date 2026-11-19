@@ -4,9 +4,9 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/icon.ico")
-            .set("ProductName", "DXF Converter")
-            .set("FileDescription", "DXF Converter - clean DXF files for cutting")
-            .set("InternalName", "dxf-converter");
+            .set("ProductName", "DXF Cleaner")
+            .set("FileDescription", "DXF Cleaner - clean DXF files for cutting")
+            .set("InternalName", "dxf-cleaner");
         if let Err(e) = res.compile() {
             panic!("failed to embed Windows resources: {e}");
         }

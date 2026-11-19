@@ -1,6 +1,6 @@
 //! Command-line version: dxf-clean <input.dxf> [-o output.dxf] [--tol 0.05] [--join 0.05] [--lines-arcs] [--origin]
 
-use dxf_converter::*;
+use dxf_cleaner::*;
 use std::path::PathBuf;
 
 fn main() {

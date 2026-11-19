@@ -1,13 +1,16 @@
 //! The real `Host`: dialogs, files, registry and shortcuts on this Windows account.
 
-use crate::flow::{APP_NAME, EXE_NAME, Host, Notice, Question, UNINSTALLER};
+use crate::flow::{APP_NAME, EXE_NAME, Host, Notice, OLD_APP_NAME, OLD_EXE_NAME, Question, UNINSTALLER};
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const APP_EXE: &[u8] = include_bytes!(env!("DXF_APP_EXE", "set DXF_APP_EXE (use package.ps1)"));
 const PUBLISHER: &str = "NHL";
+/// Kept from before the rename to DXF Cleaner: it is the product's identity in "Apps &
+/// features" (staff see DisplayName, not this), so an old install's version is still found.
 const REG_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\NHL-DXF-Converter";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DETACHED_PROCESS: u32 = 0x0000_0008;
@@ -36,6 +39,10 @@ impl Host for WindowsHost {
         dir.join(EXE_NAME).exists()
     }
 
+    fn legacy_present(&self, old_dir: &Path) -> bool {
+        old_dir.join(OLD_EXE_NAME).exists()
+    }
+
     fn installed_version(&self) -> Option<String> {
         let out = reg(&["query", REG_KEY, "/v", "DisplayVersion"]).ok()?;
         out.lines()
@@ -44,10 +51,16 @@ impl Host for WindowsHost {
             .map(str::to_string)
     }
 
+    /// Under either name: the old app holds files that an update from it removes.
     fn app_running(&self) -> Result<bool, String> {
-        let filter = format!("IMAGENAME eq {EXE_NAME}");
-        let out = run_tool("tasklist", Command::new(system_tool("tasklist.exe")).args(["/FI", &filter, "/NH", "/FO", "CSV"]))?;
-        Ok(out.to_ascii_lowercase().contains(&EXE_NAME.to_ascii_lowercase()))
+        for exe in [EXE_NAME, OLD_EXE_NAME] {
+            let filter = format!("IMAGENAME eq {exe}");
+            let out = run_tool("tasklist", Command::new(system_tool("tasklist.exe")).args(["/FI", &filter, "/NH", "/FO", "CSV"]))?;
+            if out.to_ascii_lowercase().contains(&exe.to_ascii_lowercase()) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Write the app next to its final name, then swap it in, so a failed write never
@@ -121,7 +134,10 @@ impl Host for WindowsHost {
         if !dir.exists() {
             return;
         }
-        let script = std::env::temp_dir().join(format!("dxf-converter-uninstall-{}.cmd", std::process::id()));
+        // One script per folder: an uninstall can schedule the old folder and the new one.
+        static SCRIPTS: AtomicUsize = AtomicUsize::new(0);
+        let n = SCRIPTS.fetch_add(1, Ordering::Relaxed);
+        let script = std::env::temp_dir().join(format!("dxf-cleaner-uninstall-{}-{n}.cmd", std::process::id()));
         if std::fs::write(&script, cleanup_script(dir, &system_tool("PING.EXE"))).is_err() {
             return;
         }
@@ -130,6 +146,16 @@ impl Host for WindowsHost {
             .current_dir(std::env::temp_dir())
             .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
             .spawn();
+    }
+
+    fn remove_legacy(&mut self, old_dir: &Path) -> Result<(), String> {
+        let exe = old_dir.join(OLD_EXE_NAME);
+        if exe.exists() {
+            std::fs::remove_file(&exe).map_err(|e| format!("Could not remove {}: {e}", exe.display()))?;
+        }
+        powershell(&remove_shortcuts_script(), &[("DXF_NAME", OLD_APP_NAME)])?;
+        self.schedule_folder_removal(old_dir);
+        Ok(())
     }
 }
 
@@ -252,7 +278,7 @@ mod tests {
     #[test]
     fn cleanup_script_removes_folder_and_itself() {
         let base = std::env::temp_dir().join(format!("dxf cleanup test {}", std::process::id()));
-        let dir = base.join("DXF Converter");
+        let dir = base.join("DXF Cleaner");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("uninstall.exe"), b"x").unwrap();
         let script = base.join("cleanup.cmd");

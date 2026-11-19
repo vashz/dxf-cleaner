@@ -1,10 +1,10 @@
-//! Single-file, per-user installer for DXF Converter (no admin rights needed).
+//! Single-file, per-user installer for DXF Cleaner (no admin rights needed).
 //!
-//!   dxf-converter-setup.exe               interactive install / update
-//!   dxf-converter-setup.exe /quiet        silent install (for IT / scripts)
+//!   dxf-cleaner-setup.exe               interactive install / update
+//!   dxf-cleaner-setup.exe /quiet        silent install (for IT / scripts)
 //!   uninstall.exe /uninstall [/quiet]     remove (used by Windows "Apps & features")
 //!
-//! Installs to %LOCALAPPDATA%\Programs\DXF Converter, adds Desktop and Start-menu
+//! Installs to %LOCALAPPDATA%\Programs\DXF Cleaner, adds Desktop and Start-menu
 //! shortcuts and registers an uninstall entry under HKCU.
 //!
 //! `flow` decides what to do and in which order; `windows` is the `Host` that does it.

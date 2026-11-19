@@ -1,4 +1,4 @@
-use dxf_converter::*;
+use dxf_cleaner::*;
 
 fn load(name: &str) -> Drawing {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);

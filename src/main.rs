@@ -1,9 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use dxf_converter::clean::Path as CPath;
-use dxf_converter::geom::{BBox, P};
-use dxf_converter::spans::{outline, Outline};
-use dxf_converter::*;
+use dxf_cleaner::clean::Path as CPath;
+use dxf_cleaner::geom::{BBox, P};
+use dxf_cleaner::spans::{outline, Outline};
+use dxf_cleaner::*;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use std::path::PathBuf;
 
@@ -21,7 +21,7 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1360.0, 820.0])
         .with_min_inner_size([900.0, 560.0])
-        .with_title("DXF Converter")
+        .with_title("DXF Cleaner")
         .with_drag_and_drop(true);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")) {
         viewport = viewport.with_icon(icon);
@@ -29,7 +29,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     let start_file = std::env::args().nth(1).map(PathBuf::from);
     eframe::run_native(
-        "DXF Converter",
+        "DXF Cleaner",
         options,
         Box::new(move |_cc| {
             let mut app = App::default();

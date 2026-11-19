@@ -39,7 +39,7 @@ jobs:
       - name: Upload setup and portable zip
         uses: actions/upload-artifact@v4
         with:
-          name: dxf-converter-${{ github.sha }}
+          name: dxf-cleaner-${{ github.sha }}
           path: |
             dist/*.exe
             dist/*.zip

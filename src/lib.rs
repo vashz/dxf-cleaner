@@ -1,4 +1,4 @@
-//! DXF Converter: clean up polluted DXF exports (e.g. from Adobe Illustrator)
+//! DXF Cleaner: clean up polluted DXF exports (e.g. from Adobe Illustrator)
 //! into continuous lines and true arcs for cutting machines.
 
 pub mod clean;
