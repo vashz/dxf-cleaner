@@ -4,6 +4,10 @@ Windows tool that cleans "polluted" DXF exports (e.g. Adobe Illustrator) so cutt
 software gets continuous straight lines and **true arcs** instead of splines that it
 breaks into point-to-point moves.
 
+Source: [vashz/dxf-cleaner](https://github.com/vashz/dxf-cleaner) (formerly
+`vashz/nhl-dxf-converter`; GitHub redirects the old name, and an existing clone can switch
+with `git remote set-url origin https://github.com/vashz/dxf-cleaner.git`).
+
 ## Workflow
 
 1. **Open DXF** (or drag & drop a file onto the window)
