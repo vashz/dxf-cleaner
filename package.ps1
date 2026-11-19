@@ -22,6 +22,7 @@ $app = Join-Path $PSScriptRoot 'target\release\dxf-converter.exe'
 $cli = Join-Path $PSScriptRoot 'target\release\dxf-clean.exe'
 $env:DXF_APP_EXE = $app
 $env:DXF_APP_VERSION = $version
+Invoke-Checked 'installer tests' { cargo test --release --quiet --manifest-path installer\Cargo.toml }
 Invoke-Checked 'installer build' { cargo build --release --manifest-path installer\Cargo.toml }
 
 $dist = Join-Path $PSScriptRoot 'dist'
