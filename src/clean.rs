@@ -544,9 +544,9 @@ fn fit_points(pts: &[P], tol: f64) -> Vec<Fitted> {
         }
         match ja {
             Some((j, bu)) if j > jl => {
-                let sup = q[i..=j].to_vec();
-                let (bu, _) = best_arc(q[i], q[j], bu, &sup, tol);
-                out.push(Fitted::new(Seg::new(q[i], q[j], bu), sup));
+                let original = q[i..=j].to_vec();
+                let (bu, _) = best_arc(q[i], q[j], bu, &original, tol);
+                out.push(Fitted::new(Seg::new(q[i], q[j], bu), original));
                 i = j;
             }
             _ => {
@@ -649,7 +649,7 @@ fn try_merge(f1: &Fitted, f2: &Fitted, tol: f64) -> Option<Fitted> {
     let (s1, s2) = (&f1.seg, &f2.seg);
     let l1 = s1.is_line();
     let l2 = s2.is_line();
-    let sup = Fitted::merged_original(f1, f2);
+    let original = Fitted::merged_original(f1, f2);
     let cand = if l1 && l2 {
         if (s1.b - s1.a).dot(s2.b - s2.a) <= 0.0 {
             return None;
@@ -671,7 +671,7 @@ fn try_merge(f1: &Fitted, f2: &Fitted, tol: f64) -> Option<Fitted> {
             return None;
         }
         let bu0 = (total / 4.0).tan();
-        let (bu, _) = best_arc(s1.a, s2.b, bu0, &sup, tol);
+        let (bu, _) = best_arc(s1.a, s2.b, bu0, &original, tol);
         Seg::new(s1.a, s2.b, bu)
     } else {
         // one arc + one (short) line: absorb the line into the arc if it lies on the same circle
@@ -684,11 +684,11 @@ fn try_merge(f1: &Fitted, f2: &Fitted, tol: f64) -> Option<Fitted> {
         if total.abs() >= 2.0 * PI - 1e-3 {
             return None;
         }
-        let (bu, _) = best_arc(s1.a, s2.b, bu0, &sup, tol);
+        let (bu, _) = best_arc(s1.a, s2.b, bu0, &original, tol);
         Seg::new(s1.a, s2.b, bu)
     };
     // validate both ways
-    let merged = Fitted::new(cand, sup);
+    let merged = Fitted::new(cand, original);
     if !merged.traces_original(tol) {
         return None;
     }
@@ -896,15 +896,15 @@ fn meet(left: Fitted, right: Fitted, tol: f64) -> Vec<Fitted> {
     }
 }
 
-/// Whether `moved` still traces `original` within `tol`: its original samples lie on `moved`,
-/// and `moved` lies on the original segment.
-fn stays_near(moved: &Fitted, original: &Seg, tol: f64) -> bool {
+/// Whether `moved` still traces the segment it was `before` it moved, within `tol`: its original
+/// samples lie on `moved`, and `moved` lies on `before`.
+fn stays_near(moved: &Fitted, before: &Seg, tol: f64) -> bool {
     let s = &moved.seg;
-    moved.traces_original(tol) && s.samples(if s.is_line() { 1 } else { 16 }).iter().all(|q| original.dist_to(*q) <= tol)
+    moved.traces_original(tol) && s.samples(if s.is_line() { 1 } else { 16 }).iter().all(|q| before.dist_to(*q) <= tol)
 }
 
-/// A straight segment that fills a gap; its original samples are its own ends, so later merges
-/// keep it honest.
+/// A straight segment that fills a gap. It is not traced from the original geometry: its own ends
+/// stand in for original samples, so later merges still keep it honest.
 fn bridge(a: P, b: P) -> Fitted {
     Fitted::new(Seg::new(a, b, 0.0), vec![a, b])
 }
@@ -1396,7 +1396,7 @@ mod tests {
     }
 
     #[test]
-    fn biarc_samples_run_from_each_arc_start_to_its_end() {
+    fn assign_original_gives_each_segment_its_nearest_samples_between_its_ends() {
         let segs = [Seg::new(p(0.0, 0.0), p(5.0, 0.0), 0.0), Seg::new(p(5.0, 0.0), p(10.0, 0.0), 0.0)];
         let fitted = assign_original(&segs, &[p(1.0, 0.0), p(7.0, 0.0)]);
         let originals: Vec<&[P]> = fitted.iter().map(|f| f.original.as_slice()).collect();
