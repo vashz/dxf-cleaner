@@ -113,13 +113,11 @@ pub fn bulge_from_end_tangent(a: P, b: P, t: P) -> f64 {
 
 /// A line (bulge = 0) or circular arc from `a` to `b`.
 /// `bulge = tan(sweep/4)`, positive = counter-clockwise.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Seg {
     pub a: P,
     pub b: P,
     pub bulge: f64,
-    /// Samples of the *original* geometry this segment replaces. Used to validate merges.
-    pub support: Vec<P>,
 }
 
 pub const LINE_BULGE_EPS: f64 = 1e-9;
@@ -141,12 +139,7 @@ pub struct ArcInfo {
 
 impl Seg {
     pub fn new(a: P, b: P, bulge: f64) -> Seg {
-        let mut s = Seg { a, b, bulge, support: Vec::new() };
-        s.support = s.samples(if s.is_line() { 2 } else { 8 });
-        s
-    }
-    pub fn with_support(a: P, b: P, bulge: f64, support: Vec<P>) -> Seg {
-        Seg { a, b, bulge, support }
+        Seg { a, b, bulge }
     }
     pub fn is_line(&self) -> bool {
         bulge_is_straight(self.bulge)
@@ -217,9 +210,7 @@ impl Seg {
         rotate(d, half)
     }
     pub fn reversed(&self) -> Seg {
-        let mut sup = self.support.clone();
-        sup.reverse();
-        Seg { a: self.b, b: self.a, bulge: -self.bulge, support: sup }
+        Seg { a: self.b, b: self.a, bulge: -self.bulge }
     }
     pub fn dist_to(&self, q: P) -> f64 {
         match self.arc() {
@@ -251,8 +242,8 @@ pub fn rotate(v: P, ang: f64) -> P {
     p(v.x * c - v.y * s, v.x * s + v.y * c)
 }
 
-pub fn dist_to_segs(q: P, segs: &[Seg]) -> f64 {
-    segs.iter().map(|s| s.dist_to(q)).fold(f64::INFINITY, f64::min)
+pub fn dist_to_segs<'a>(q: P, segs: impl IntoIterator<Item = &'a Seg>) -> f64 {
+    segs.into_iter().map(|s| s.dist_to(q)).fold(f64::INFINITY, f64::min)
 }
 
 pub fn dist_to_polyline(q: P, pts: &[P]) -> f64 {

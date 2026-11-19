@@ -165,7 +165,7 @@ impl Span<'_> {
             Span::Line { a, b } => a.lerp(b, t),
             Span::Arc { c, r, .. } | Span::Circle { c, r } => c + p(t.cos(), t.sin()) * r,
             Span::Ellipse { c, u, v, .. } => c + u * t.cos() + v * t.sin(),
-            Span::Bulge { a, b, bulge } => Seg::with_support(a, b, bulge, vec![]).point_at(t),
+            Span::Bulge { a, b, bulge } => Seg::new(a, b, bulge).point_at(t),
             Span::Nurbs { curve, span, .. } => curve.eval_span(span, t),
             Span::FitPoints(_) => panic!("fit points have no parameter"),
         }

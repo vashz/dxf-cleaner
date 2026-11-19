@@ -76,7 +76,7 @@ fn illustrator_rounded_rect_and_hole_become_true_arcs() {
         match shape {
             Shape::Circle { r, .. } => assert!((r - 20.0).abs() < 1e-6, "circle r = {r}"),
             Shape::Path(p) => {
-                for seg in p.segs().iter().filter(|s| !s.is_line()) {
+                for seg in p.segs().filter(|s| !s.is_line()) {
                     let r = seg.arc().unwrap().r;
                     assert!((r - 15.0).abs() < 1e-6, "corner r = {r}");
                 }
