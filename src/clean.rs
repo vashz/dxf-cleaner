@@ -99,6 +99,16 @@ pub struct Stats {
     pub max_deviation: f64,
 }
 
+impl Stats {
+    /// Warning for exporting a result that still has open paths, which nesting software
+    /// rejects unless they are marking lines. `None` when every path is closed.
+    pub fn open_path_warning(&self) -> Option<String> {
+        let n = self.open_paths;
+        let (paths, which) = if n == 1 { ("path", "it is a marking line") } else { ("paths", "they are marking lines") };
+        (n > 0).then(|| format!("{n} open {paths}: nesting software will reject this file unless {which}."))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CleanResult {
     pub shapes: Vec<Shape>,

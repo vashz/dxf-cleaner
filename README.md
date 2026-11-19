@@ -9,7 +9,10 @@ breaks into point-to-point moves.
 1. **Open DXF…** (or drag & drop a file onto the window)
 2. **Clean Up**
 3. Compare **Before** (left) and **After** (right). Pan/zoom is shared between both views.
-4. **Export DXF…** (saves `<name>_clean.dxf` next to the original by default)
+4. **Export DXF…** (saves `<name>_clean.dxf` next to the original by default). If the result
+   still has open paths, it first warns that nesting software will reject them unless they
+   are marking lines, and asks whether to export anyway. `dxf-clean` prints the same warning
+   to stderr and still writes the file.
 
 ## What Clean Up does
 
