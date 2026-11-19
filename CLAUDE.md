@@ -1,4 +1,4 @@
-# nhl-dxf-converter
+# dxf-cleaner
 
 Windows tool (Rust, egui) that cleans polluted DXF exports into continuous lines and true arcs for cutting machines. See `README.md` for build, test and packaging commands.
 
@@ -6,7 +6,7 @@ Windows tool (Rust, egui) that cleans polluted DXF exports into continuous lines
 
 ### Issue tracker
 
-Issues live in GitHub Issues for vashz/nhl-dxf-converter (gh CLI). See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues for vashz/dxf-cleaner (gh CLI). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
