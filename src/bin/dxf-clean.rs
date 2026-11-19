@@ -28,22 +28,20 @@ fn main() {
         eprintln!("usage: dxf-clean <input.dxf> [-o output.dxf]");
         std::process::exit(2);
     };
-    let dwg = match read_file(&input) {
-        Ok(d) => d,
+    let job = match Job::open(input) {
+        Ok(j) => j,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
     };
-    let res = clean(&dwg, &opt);
-    let out = output.unwrap_or_else(|| {
-        let stem = input.file_stem().unwrap_or_default().to_string_lossy();
-        input.with_file_name(format!("{stem}_clean.dxf"))
-    });
-    if let Err(e) = std::fs::write(&out, write_dxf(&res.shapes, mode, dwg.insunits)) {
+    let res = job.clean(&opt);
+    let out = output.unwrap_or_else(|| job.default_output());
+    if let Err(e) = std::fs::write(&out, job.dxf_text(&res, mode)) {
         eprintln!("error writing {}: {e}", out.display());
         std::process::exit(1);
     }
+    let dwg = job.drawing();
     println!("input : {:?}", dwg.counts);
     if !dwg.skipped.is_empty() {
         println!("ignored: {:?}", dwg.skipped);
