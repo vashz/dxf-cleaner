@@ -1,0 +1,53 @@
+# DXF Converter
+
+Windows tool that cleans "polluted" DXF exports (e.g. Adobe Illustrator) so cutting
+software gets continuous straight lines and **true arcs** instead of splines that it
+breaks into point-to-point moves.
+
+## Workflow
+
+1. **Open DXF…** (or drag & drop a file onto the window)
+2. **Clean Up**
+3. Compare **Before** (left) and **After** (right). Pan/zoom is shared between both views.
+4. **Export DXF…** (saves `<name>_clean.dxf` next to the original by default)
+
+## What Clean Up does
+
+| Input | Result |
+|---|---|
+| SPLINE (Bezier/NURBS, incl. rational) | straight segments → LINE, curved → true ARCs (biarc fitting, tangent-continuous) |
+| Densely tessellated LWPOLYLINE / POLYLINE | collinear points merged into lines, point runs on a circle fitted as arcs |
+| Illustrator circles (4 Bezier quarters) / tessellated circles | one CIRCLE |
+| LINE / ARC / CIRCLE / ELLIPSE / bulged polylines | kept; collinear lines and co-circular arcs merged |
+| Pieces whose ends touch (within *Join gap*) | joined into one continuous (closed) path |
+| Duplicate geometry | removed |
+| HATCH fills, TEXT, dimensions, points… | ignored (listed under "Ignored") |
+| Blocks (INSERT) | exploded with their transform |
+
+Every result is checked against samples of the original geometry: no point moves more than
+the **Tolerance** (default 0.05 drawing units, usually mm). The achieved max deviation is shown.
+
+Output is an R12 (AC1009) DXF, the format nearly every CAM/cutting package reads, with either
+continuous `POLYLINE`s carrying arc bulges (recommended) or separate `LINE`/`ARC` entities.
+Full circles are always written as `CIRCLE`.
+
+## Build
+
+```powershell
+cargo build --release
+```
+
+Produces `target\release\dxf-converter.exe` (GUI) and `target\release\dxf-clean.exe` (command line):
+
+```powershell
+dxf-clean input.dxf -o output.dxf --tol 0.05 --join 0.05 [--lines-arcs] [--origin]
+```
+
+## Tests
+
+```powershell
+cargo test
+```
+
+`tests/fixtures/illustrator_polluted.dxf` is a real Illustrator export (2 splines + 2 hatches);
+the test checks it becomes two closed 8-segment outlines like `tests/fixtures/manual_fix.dxf`.
