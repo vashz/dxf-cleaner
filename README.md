@@ -54,7 +54,7 @@ Without `-o` it writes `<name>_clean.dxf` beside the input. The switches match t
 
 A mistake on the command line stops the run before anything is read or written: no input file, an unknown switch, a second input file, `-o` without a file name, or `--tol` / `--join` without a number. So does a `--tol` of 0 or less, or a negative `--join`. `dxf-clean` prints `error: …` naming the argument, then the usage line, and exits with code 2. Read or write failures exit with code 1.
 
-## Packaging for staff
+## Packaging
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\package.ps1

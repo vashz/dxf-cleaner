@@ -2,6 +2,7 @@
 name = "dxf-cleaner-setup"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 description = "Per-user installer for DXF Cleaner (build it with ../package.ps1)"
 publish = false
 
