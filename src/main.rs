@@ -155,6 +155,17 @@ impl App {
 
     fn export_dialog(&mut self) {
         let Some(res) = &self.result else { return };
+        if let Some(warning) = res.stats.open_path_warning() {
+            let answer = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Warning)
+                .set_title("Open paths")
+                .set_description(format!("{warning}\n\nExport anyway?"))
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .show();
+            if answer != rfd::MessageDialogResult::Yes {
+                return;
+            }
+        }
         let (dir, name) = match &self.path {
             Some(p) => (
                 p.parent().map(|d| d.to_path_buf()),

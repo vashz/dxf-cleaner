@@ -54,4 +54,7 @@ fn main() {
         s.closed_paths, s.open_paths, s.lines, s.arcs, s.circles, s.duplicates_removed, s.max_deviation
     );
     println!("wrote {}", out.display());
+    if let Some(w) = s.open_path_warning() {
+        eprintln!("warning: {w}");
+    }
 }
