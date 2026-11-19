@@ -7,7 +7,7 @@ const USAGE: &str = "dxf-clean <input.dxf> [-o output.dxf] [--tol 0.05] [--join 
 
 /// What the command line asks for.
 struct Cli {
-    input: Option<PathBuf>,
+    input: PathBuf,
     output: Option<PathBuf>,
     opt: Options,
     mode: OutputMode,
@@ -15,38 +15,42 @@ struct Cli {
 
 /// Reads the arguments, or names the first one that is wrong. `Ok(None)` means `--help`.
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Cli>, String> {
-    let mut cli = Cli { input: None, output: None, opt: Options::default(), mode: OutputMode::Polylines };
+    let mut input: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut opt = Options::default();
+    let mut mode = OutputMode::Polylines;
     while let Some(a) = args.next() {
         match a.as_str() {
-            "-o" | "--output" => cli.output = Some(PathBuf::from(value(&a, args.next(), "a file name")?)),
+            "-o" | "--output" => output = Some(PathBuf::from(value(&a, args.next(), "a file name")?)),
             "--tol" => {
                 let (n, v) = number(&a, args.next())?;
                 if n <= 0.0 {
                     return Err(format!("--tol must be greater than 0, got '{v}'"));
                 }
-                cli.opt.tolerance = n;
+                opt.tolerance = n;
             }
             "--join" => {
                 let (n, v) = number(&a, args.next())?;
                 if n < 0.0 {
                     return Err(format!("--join must be 0 or more, got '{v}'"));
                 }
-                cli.opt.join_gap = n;
+                opt.join_gap = n;
             }
-            "--no-join" => cli.opt.join_paths = false,
-            "--lines-arcs" => cli.mode = OutputMode::LinesAndArcs,
-            "--origin" => cli.opt.move_to_origin = true,
-            "--keep-duplicates" => cli.opt.remove_duplicates = false,
-            "--layer0" => cli.opt.put_everything_on_layer_0(true),
+            "--no-join" => opt.join_paths = false,
+            "--lines-arcs" => mode = OutputMode::LinesAndArcs,
+            "--origin" => opt.move_to_origin = true,
+            "--keep-duplicates" => opt.remove_duplicates = false,
+            "--layer0" => opt.put_everything_on_layer_0(true),
             "-h" | "--help" => return Ok(None),
             flag if flag.starts_with('-') => return Err(format!("unknown argument '{flag}'")),
-            _ => match &cli.input {
+            _ => match &input {
                 Some(first) => return Err(format!("more than one input file: '{}' and '{a}'", first.display())),
-                None => cli.input = Some(PathBuf::from(a)),
+                None => input = Some(PathBuf::from(a)),
             },
         }
     }
-    Ok(Some(cli))
+    let input = input.ok_or("no input file")?;
+    Ok(Some(Cli { input, output, opt, mode }))
 }
 
 /// The value after `flag`. Nothing there, or another `--` flag in its place, is a mistake.
@@ -75,10 +79,6 @@ fn main() {
             eprintln!("usage: {USAGE}");
             std::process::exit(2);
         }
-    };
-    let Some(input) = input else {
-        eprintln!("usage: {USAGE}");
-        std::process::exit(2);
     };
     let job = match Job::open(input) {
         Ok(j) => j,

@@ -1,4 +1,5 @@
-//! `dxf-clean` as staff and scripts run it: warnings on stderr, the file still written.
+//! `dxf-clean` as staff and scripts run it. A warning goes to stderr and the file is still
+//! written; a mistake in the arguments goes to stderr, writes nothing and exits with code 2.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -140,6 +141,17 @@ fn assert_usage_error(out: &Output, written: &PathBuf, error_line: &str) {
     assert_eq!(lines.len(), 2, "stderr: {stderr:?}");
     assert_eq!(lines[0], error_line);
     assert!(lines[1].starts_with("usage: dxf-clean <input.dxf> "), "stderr: {stderr:?}");
+}
+
+#[test]
+fn no_input_file_is_reported() {
+    let dir = std::env::temp_dir().join(format!("dxf-clean-cli-test-no-input-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for flags in [&[][..], &["--origin", "-o", "out.dxf"][..]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_dxf-clean")).args(flags).current_dir(&dir).output().unwrap();
+        assert_usage_error(&out, &dir.join("out.dxf"), "error: no input file");
+    }
 }
 
 #[test]
