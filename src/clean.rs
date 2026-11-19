@@ -11,7 +11,7 @@ pub struct Options {
     /// Maximum allowed deviation from the original geometry (drawing units).
     pub tolerance: f64,
     /// Endpoints closer than this are joined into one continuous path.
-    pub join_tolerance: f64,
+    pub join_gap: f64,
     pub remove_duplicates: bool,
     pub join_paths: bool,
     pub move_to_origin: bool,
@@ -23,7 +23,7 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             tolerance: 0.05,
-            join_tolerance: 0.05,
+            join_gap: 0.05,
             remove_duplicates: true,
             join_paths: true,
             move_to_origin: false,
@@ -32,25 +32,132 @@ impl Default for Options {
     }
 }
 
+/// The two distances every closing and joining decision needs.
+#[derive(Clone, Copy, Debug)]
+struct Limits {
+    /// How far original geometry may move (see `Options::tolerance`).
+    tol: f64,
+    /// How far apart two path ends may be and still be joined (see `Options::join_gap`).
+    join_gap: f64,
+}
+
+/// A continuous run of segments on one layer: each segment starts exactly where the previous
+/// one ends, and a closed path ends exactly where it starts.
+///
+/// Only `Path`'s own methods move segment endpoints (closing, joining, dropping negligible
+/// segments), so no join can move original geometry past the tolerance; see [`meet`].
 #[derive(Clone, Debug)]
 pub struct Path {
-    pub segs: Vec<Seg>,
-    pub closed: bool,
-    pub layer: String,
+    segs: Vec<Seg>,
+    closed: bool,
+    layer: String,
 }
 
 impl Path {
+    pub fn segs(&self) -> &[Seg] {
+        &self.segs
+    }
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+    pub fn layer(&self) -> &str {
+        &self.layer
+    }
     pub fn start(&self) -> P {
         self.segs[0].a
     }
     pub fn end(&self) -> P {
         self.segs.last().unwrap().b
     }
-    pub fn reverse(&mut self) {
+    fn reverse(&mut self) {
         self.segs.reverse();
         for s in &mut self.segs {
             *s = s.reversed();
         }
+    }
+
+    /// Appends `next`, meeting this path's end and `next`'s start across the gap.
+    fn append(&mut self, next: Path, tol: f64) {
+        self.segs = join_segs(std::mem::take(&mut self.segs), next.segs, tol);
+    }
+
+    /// Prepends `prev`, meeting `prev`'s end and this path's start across the gap.
+    fn prepend(&mut self, prev: Path, tol: f64) {
+        self.segs = join_segs(prev.segs, std::mem::take(&mut self.segs), tol);
+    }
+
+    /// The path a converted source entity becomes. A closed entity (e.g. a closed polyline
+    /// whose last vertex does not repeat the first) gets its closing segment; an open one is
+    /// closed if its own ends touch.
+    fn from_entity(segs: Vec<Seg>, closed: bool, layer: String, lim: Limits) -> Path {
+        let mut path = Path { segs, closed: false, layer };
+        if closed {
+            if path.end().dist(path.start()) > negligible(lim.tol) {
+                // part of the source geometry, not a bridge
+                path.segs.push(Seg::new(path.end(), path.start(), 0.0));
+            }
+            path.close(lim.tol);
+        } else {
+            path.close_if_touching(Limits { join_gap: lim.join_gap.max(negligible(lim.tol)), ..lim });
+        }
+        path
+    }
+
+    /// Marks the path closed, meeting its end and start across the remaining gap.
+    fn close(&mut self, tol: f64) {
+        if self.segs.len() == 1 {
+            // a lone segment cannot meet itself: split it so its two halves can
+            let (h1, h2) = halves(&self.segs[0]);
+            self.segs = vec![h1, h2];
+        }
+        let last = self.segs.pop().unwrap();
+        let first = self.segs.remove(0);
+        let mut joint = meet(last, first, tol);
+        self.segs.insert(0, joint.pop().unwrap());
+        self.segs.extend(joint);
+        self.closed = true;
+    }
+
+    /// Closes an open path whose ends are within the join gap of each other, unless it is
+    /// too short to be an outline.
+    fn close_if_touching(&mut self, lim: Limits) {
+        if self.closed || self.segs.is_empty() {
+            return;
+        }
+        let gap = lim.join_gap;
+        let len = self.length();
+        if self.start().dist(self.end()) <= gap && len > 4.0 * gap && (self.segs.len() >= 2 || !self.segs[0].is_line()) {
+            self.close(lim.tol);
+        }
+    }
+
+    /// Moves the whole path, with its support samples, by `d`.
+    fn translate(&mut self, d: P) {
+        for seg in &mut self.segs {
+            seg.a = seg.a + d;
+            seg.b = seg.b + d;
+            for q in &mut seg.support {
+                *q = *q + d;
+            }
+        }
+    }
+
+    /// Whether `other` traces the same outline as this path, within `tol`.
+    fn same_outline(&self, other: &Path, tol: f64) -> bool {
+        if self.closed != other.closed {
+            return false;
+        }
+        let (b1, b2) = (self.bbox(), other.bbox());
+        if b1.min.dist(b2.min) > tol || b1.max.dist(b2.max) > tol {
+            return false;
+        }
+        if (self.length() - other.length()).abs() > tol * (self.segs.len() + other.segs.len()) as f64 {
+            return false;
+        }
+        let covers = |x: &Path, y: &Path| {
+            x.segs.iter().all(|s| s.samples(if s.is_line() { 2 } else { 6 }).iter().all(|q| dist_to_segs(*q, &y.segs) <= tol))
+        };
+        covers(self, other) && covers(other, self)
     }
     pub fn bbox(&self) -> BBox {
         let mut b = BBox::empty();
@@ -75,7 +182,7 @@ pub enum Shape {
 impl Shape {
     pub fn layer(&self) -> &str {
         match self {
-            Shape::Path(p) => &p.layer,
+            Shape::Path(p) => p.layer(),
             Shape::Circle { layer, .. } => layer,
         }
     }
@@ -216,7 +323,7 @@ fn fit_parametric(f: &dyn Fn(f64) -> P, t0: f64, t1: f64, tol: f64, depth: usize
     let a = f(t0);
     let b = f(t1);
     let samples: Vec<P> = (0..=SAMPLES).map(|i| f(t0 + (t1 - t0) * i as f64 / SAMPLES as f64)).collect();
-    if samples.iter().all(|q| q.dist(a) <= tol * 1e-3) {
+    if samples.iter().all(|q| q.dist(a) <= negligible(tol)) {
         return; // degenerate (zero length)
     }
     let split = |out: &mut Vec<Seg>| {
@@ -331,7 +438,7 @@ fn arc_ok(q: &[P], i: usize, j: usize, tol: f64) -> Option<f64> {
 pub fn fit_points(pts: &[P], tol: f64) -> Vec<Seg> {
     let mut q: Vec<P> = Vec::with_capacity(pts.len());
     for &x in pts {
-        if q.last().map(|l: &P| l.dist(x) > tol * 1e-3).unwrap_or(true) {
+        if q.last().map(|l: &P| l.dist(x) > negligible(tol)).unwrap_or(true) {
             q.push(x);
         }
     }
@@ -435,7 +542,7 @@ enum Converted {
 fn convert_entity(e: &Entity, tol: f64) -> Converted {
     match &e.geom {
         Geom::Line { a, b } => {
-            if a.dist(*b) <= tol * 1e-3 {
+            if a.dist(*b) <= negligible(tol) {
                 Converted::None
             } else {
                 Converted::Segs(vec![Seg::new(*a, *b, 0.0)], false)
@@ -487,7 +594,7 @@ fn convert_entity(e: &Entity, tol: f64) -> Converted {
                     run.push(b);
                 } else {
                     flush(&mut run, &mut segs);
-                    if a.dist(b) > tol * 1e-3 {
+                    if a.dist(b) > negligible(tol) {
                         let s = Seg::new(a, b, bu);
                         // split big arcs into <= 90 degree pieces for robust merging
                         if let Some(ai) = s.arc() {
@@ -590,96 +697,106 @@ fn try_merge(s1: &Seg, s2: &Seg, tol: f64) -> Option<Seg> {
     Some(Seg { support: sup, ..cand })
 }
 
-fn simplify(path: &mut Path, tol: f64) {
-    let tiny = tol * 1e-3;
-    let mut out: Vec<Seg> = Vec::with_capacity(path.segs.len());
-    for s in path.segs.drain(..) {
-        if s.chord() <= tiny && s.is_line() {
-            // drop, but keep continuity
-            if let Some(last) = out.last_mut() {
-                last.b = s.b;
-            }
-            continue;
-        }
-        if let Some(last) = out.last() {
-            if let Some(m) = try_merge(last, &s, tol) {
-                *out.last_mut().unwrap() = m;
+impl Path {
+    /// Drops negligible lines and merges collinear lines / co-circular arcs.
+    fn simplify(&mut self, tol: f64) {
+        let tiny = negligible(tol);
+        let mut out: Vec<Seg> = Vec::with_capacity(self.segs.len());
+        // start of a dropped leading piece, handed to the next kept segment
+        let mut carried_start: Option<P> = None;
+        for mut s in self.segs.drain(..) {
+            if s.chord() <= tiny && s.is_line() {
+                // drop, but keep continuity
+                match out.last_mut() {
+                    Some(last) => last.b = s.b,
+                    None => carried_start = carried_start.or(Some(s.a)),
+                }
                 continue;
             }
-        }
-        out.push(s);
-    }
-    if path.closed {
-        while out.len() >= 2 {
-            let last = out.last().unwrap();
-            match try_merge(last, &out[0], tol) {
-                Some(m) => {
-                    out.pop();
-                    out[0] = m;
+            if let Some(a) = carried_start.take() {
+                s.a = a;
+            }
+            if let Some(last) = out.last() {
+                if let Some(m) = try_merge(last, &s, tol) {
+                    *out.last_mut().unwrap() = m;
+                    continue;
                 }
-                None => break,
+            }
+            out.push(s);
+        }
+        if self.closed {
+            while out.len() >= 2 {
+                let last = out.last().unwrap();
+                match try_merge(last, &out[0], tol) {
+                    Some(m) => {
+                        out.pop();
+                        out[0] = m;
+                    }
+                    None => break,
+                }
             }
         }
+        self.segs = out;
     }
-    path.segs = out;
-}
 
-fn as_circle(path: &Path, tol: f64) -> Option<(P, f64)> {
-    if !path.closed || path.segs.is_empty() {
-        return None;
-    }
-    let infos: Vec<ArcInfo> = path.segs.iter().filter_map(|s| s.arc()).collect();
-    if infos.is_empty() {
-        return None;
-    }
-    // weight by arc length so tiny pieces do not skew the result
-    let wsum: f64 = infos.iter().map(|ai| ai.r * ai.sweep.abs()).sum();
-    if wsum <= 0.0 {
-        return None;
-    }
-    let c = infos.iter().fold(p(0.0, 0.0), |acc, ai| acc + ai.c * (ai.r * ai.sweep.abs())) * (1.0 / wsum);
-    // best-fit radius around that center (min-max of all original samples)
-    let (mut dmin, mut dmax) = (f64::INFINITY, 0.0f64);
-    for s in &path.segs {
-        for q in s.support.iter().chain([&s.a, &s.b]) {
-            let d = q.dist(c);
-            dmin = dmin.min(d);
-            dmax = dmax.max(d);
+    /// The circle this closed path traces, if every original sample lies on it within `tol`.
+    fn as_circle(&self, tol: f64) -> Option<(P, f64)> {
+        if !self.closed || self.segs.is_empty() {
+            return None;
         }
-    }
-    if (dmax - dmin) / 2.0 > tol {
-        return None;
-    }
-    // prefer the arcs' own (designed) radius; fall back to the min-max radius
-    let r_avg = infos.iter().map(|ai| ai.r * ai.sweep.abs()).sum::<f64>() / infos.iter().map(|ai| ai.sweep.abs()).sum::<f64>();
-    let r = if (dmax - r_avg).abs().max((r_avg - dmin).abs()) <= tol * 0.5 { r_avg } else { (dmax + dmin) / 2.0 };
-    let mut total = 0.0;
-    for s in &path.segs {
-        if s.is_line() {
-            let half = s.chord() / 2.0;
-            if half > r || r - (r * r - half * half).sqrt() > tol {
-                return None;
-            }
-            total += signed_angle(s.a - c, s.b - c);
-        } else {
-            total += s.sweep();
+        let infos: Vec<ArcInfo> = self.segs.iter().filter_map(|s| s.arc()).collect();
+        if infos.is_empty() {
+            return None;
         }
-        // verify against the original samples
-        for q in s.support.iter().chain([&s.a, &s.b]) {
-            if (q.dist(c) - r).abs() > tol {
-                return None;
+        // weight by arc length so tiny pieces do not skew the result
+        let wsum: f64 = infos.iter().map(|ai| ai.r * ai.sweep.abs()).sum();
+        if wsum <= 0.0 {
+            return None;
+        }
+        let c = infos.iter().fold(p(0.0, 0.0), |acc, ai| acc + ai.c * (ai.r * ai.sweep.abs())) * (1.0 / wsum);
+        // best-fit radius around that center (min-max of all original samples)
+        let (mut dmin, mut dmax) = (f64::INFINITY, 0.0f64);
+        for s in &self.segs {
+            for q in s.support.iter().chain([&s.a, &s.b]) {
+                let d = q.dist(c);
+                dmin = dmin.min(d);
+                dmax = dmax.max(d);
             }
         }
+        if (dmax - dmin) / 2.0 > tol {
+            return None;
+        }
+        // prefer the arcs' own (designed) radius; fall back to the min-max radius
+        let r_avg = infos.iter().map(|ai| ai.r * ai.sweep.abs()).sum::<f64>() / infos.iter().map(|ai| ai.sweep.abs()).sum::<f64>();
+        let r = if (dmax - r_avg).abs().max((r_avg - dmin).abs()) <= tol * 0.5 { r_avg } else { (dmax + dmin) / 2.0 };
+        let mut total = 0.0;
+        for s in &self.segs {
+            if s.is_line() {
+                let half = s.chord() / 2.0;
+                if half > r || r - (r * r - half * half).sqrt() > tol {
+                    return None;
+                }
+                total += signed_angle(s.a - c, s.b - c);
+            } else {
+                total += s.sweep();
+            }
+            // verify against the original samples
+            for q in s.support.iter().chain([&s.a, &s.b]) {
+                if (q.dist(c) - r).abs() > tol {
+                    return None;
+                }
+            }
+        }
+        if (total.abs() - 2.0 * PI).abs() > 1e-2 {
+            return None;
+        }
+        Some((c, r))
     }
-    if (total.abs() - 2.0 * PI).abs() > 1e-2 {
-        return None;
-    }
-    Some((c, r))
 }
 
 // ---------------------------------------------------------------- joining
 
-fn join_paths(paths: Vec<Path>, jt: f64) -> Vec<Path> {
+fn join_paths(paths: Vec<Path>, lim: Limits) -> Vec<Path> {
     let n = paths.len();
     let mut used = vec![false; n];
     let mut out = Vec::new();
@@ -701,7 +818,7 @@ fn join_paths(paths: Vec<Path>, jt: f64) -> Vec<Path> {
                     let ds = paths[j].start().dist(end);
                     let de = paths[j].end().dist(end);
                     for (d, rev) in [(ds, false), (de, true)] {
-                        if d <= jt && best.map(|b| d < b.2).unwrap_or(true) {
+                        if d <= lim.join_gap && best.map(|b| d < b.2).unwrap_or(true) {
                             best = Some((j, rev, d));
                         }
                     }
@@ -712,8 +829,7 @@ fn join_paths(paths: Vec<Path>, jt: f64) -> Vec<Path> {
                 if rev {
                     nxt.reverse();
                 }
-                nxt.segs[0].a = end;
-                cur.segs.extend(nxt.segs);
+                cur.append(nxt, lim.tol);
             }
             // extend backward
             loop {
@@ -726,7 +842,7 @@ fn join_paths(paths: Vec<Path>, jt: f64) -> Vec<Path> {
                     let de = paths[j].end().dist(start);
                     let ds = paths[j].start().dist(start);
                     for (d, rev) in [(de, false), (ds, true)] {
-                        if d <= jt && best.map(|b| d < b.2).unwrap_or(true) {
+                        if d <= lim.join_gap && best.map(|b| d < b.2).unwrap_or(true) {
                             best = Some((j, rev, d));
                         }
                     }
@@ -737,27 +853,68 @@ fn join_paths(paths: Vec<Path>, jt: f64) -> Vec<Path> {
                 if rev {
                     prv.reverse();
                 }
-                prv.segs.last_mut().unwrap().b = start;
-                prv.segs.extend(cur.segs);
-                cur.segs = prv.segs;
+                cur.prepend(prv, lim.tol);
             }
         }
-        close_if_touching(&mut cur, jt);
+        cur.close_if_touching(lim);
         out.push(cur);
     }
     out
 }
 
-fn close_if_touching(path: &mut Path, jt: f64) {
-    if path.closed || path.segs.is_empty() {
-        return;
+/// Joins two runs of segments where `left`'s last segment ends near `right`'s first start.
+fn join_segs(mut left: Vec<Seg>, right: Vec<Seg>, tol: f64) -> Vec<Seg> {
+    let mut right = right.into_iter();
+    match (left.pop(), right.next()) {
+        (Some(l), Some(r)) => left.extend(meet(l, r, tol)),
+        (l, r) => left.extend(l.into_iter().chain(r)),
     }
-    let len = path.length();
-    if path.start().dist(path.end()) <= jt && len > 4.0 * jt && (path.segs.len() >= 2 || !path.segs[0].is_line()) {
-        let s = path.start();
-        path.segs.last_mut().unwrap().b = s;
-        path.closed = true;
+    left.extend(right);
+    left
+}
+
+/// Where `left` ends and `right` starts across a gap, the two meet halfway, as long as
+/// neither moved segment strays more than `tol` from where it was (checked both ways).
+/// Otherwise neither moves and a straight bridge fills the gap, so the path stays continuous
+/// and the original geometry stays exactly where it was.
+/// Returns `[left, right]` or `[left, bridge, right]`.
+fn meet(left: Seg, right: Seg, tol: f64) -> Vec<Seg> {
+    let gap = left.b.dist(right.a);
+    if gap == 0.0 {
+        return vec![left, right];
     }
+    let m = left.b.lerp(right.a, 0.5);
+    let l2 = Seg { b: m, ..left.clone() };
+    let r2 = Seg { a: m, ..right.clone() };
+    if gap <= negligible(tol) || (stays_near(&l2, &left, tol) && stays_near(&r2, &right, tol)) {
+        vec![l2, r2]
+    } else {
+        let b = bridge(left.b, right.a);
+        vec![left, b, right]
+    }
+}
+
+/// Whether `moved` still traces `original` within `tol`: the original's support samples lie on
+/// `moved`, and `moved` lies on the original segment.
+fn stays_near(moved: &Seg, original: &Seg, tol: f64) -> bool {
+    moved.support.iter().all(|q| moved.dist_to(*q) <= tol)
+        && moved.samples(if moved.is_line() { 1 } else { 16 }).iter().all(|q| original.dist_to(*q) <= tol)
+}
+
+/// A straight segment that fills a gap; its support is its own ends, so later merges keep it honest.
+fn bridge(a: P, b: P) -> Seg {
+    Seg::with_support(a, b, 0.0, vec![a, b])
+}
+
+/// `s` split at its midpoint, each half keeping the support samples nearest to it.
+fn halves(s: &Seg) -> (Seg, Seg) {
+    let m = s.midpoint();
+    let bulge = (s.bulge.atan() / 2.0).tan();
+    let (mut h1, mut h2) = (Seg::with_support(s.a, m, bulge, Vec::new()), Seg::with_support(m, s.b, bulge, Vec::new()));
+    let (sup1, sup2): (Vec<P>, Vec<P>) = s.support.iter().partition(|q| h1.dist_to(**q) <= h2.dist_to(**q));
+    h1.support = sup1;
+    h2.support = sup2;
+    (h1, h2)
 }
 
 // ---------------------------------------------------------------- duplicates
@@ -767,22 +924,7 @@ fn shapes_equal(a: &Shape, b: &Shape, tol: f64) -> bool {
         (Shape::Circle { c: c1, r: r1, .. }, Shape::Circle { c: c2, r: r2, .. }) => {
             c1.dist(*c2) <= tol && (r1 - r2).abs() <= tol
         }
-        (Shape::Path(p1), Shape::Path(p2)) => {
-            if p1.closed != p2.closed {
-                return false;
-            }
-            let (b1, b2) = (p1.bbox(), p2.bbox());
-            if b1.min.dist(b2.min) > tol || b1.max.dist(b2.max) > tol {
-                return false;
-            }
-            if (p1.length() - p2.length()).abs() > tol * (p1.segs.len() + p2.segs.len()) as f64 {
-                return false;
-            }
-            let covers = |x: &Path, y: &Path| {
-                x.segs.iter().all(|s| s.samples(if s.is_line() { 2 } else { 6 }).iter().all(|q| dist_to_segs(*q, &y.segs) <= tol))
-            };
-            covers(p1, p2) && covers(p2, p1)
-        }
+        (Shape::Path(p1), Shape::Path(p2)) => p1.same_outline(p2, tol),
         _ => false,
     }
 }
@@ -809,7 +951,7 @@ fn dedupe(shapes: Vec<Shape>, tol: f64, removed: &mut usize) -> Vec<Shape> {
 
 pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
     let tol = opt.tolerance.max(1e-6);
-    let jt = opt.join_tolerance.max(0.0);
+    let lim = Limits { tol, join_gap: opt.join_gap.max(0.0) };
     let mut stats = Stats::default();
     let layer_of = |e: &Entity| opt.single_layer.clone().unwrap_or_else(|| e.layer.clone());
 
@@ -822,20 +964,7 @@ pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
                 if segs.is_empty() {
                     continue;
                 }
-                let mut path = Path { segs, closed, layer: layer_of(e) };
-                if path.closed {
-                    let s = path.start();
-                    if path.end().dist(s) > tiny_gap(tol) {
-                        // closing segment for closed polylines that do not repeat the first vertex
-                        let e2 = path.end();
-                        path.segs.push(Seg::new(e2, s, 0.0));
-                    } else {
-                        path.segs.last_mut().unwrap().b = s;
-                    }
-                } else {
-                    close_if_touching(&mut path, jt.max(tol * 1e-3));
-                }
-                shapes.push(Shape::Path(path));
+                shapes.push(Shape::Path(Path::from_entity(segs, closed, layer_of(e), lim)));
             }
             Converted::None => {}
         }
@@ -855,18 +984,18 @@ pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
             c => circles.push(c),
         }
     }
-    if opt.join_paths && jt > 0.0 {
-        paths = join_paths(paths, jt);
+    if opt.join_paths && lim.join_gap > 0.0 {
+        paths = join_paths(paths, lim);
     }
 
     // 4. merge collinear lines / co-circular arcs, detect circles
     let mut shapes: Vec<Shape> = circles;
     for mut path in paths {
-        simplify(&mut path, tol);
+        path.simplify(tol);
         if path.segs.is_empty() {
             continue;
         }
-        if let Some((c, r)) = as_circle(&path, tol) {
+        if let Some((c, r)) = path.as_circle(tol) {
             shapes.push(Shape::Circle { c, r, layer: path.layer.clone() });
         } else {
             shapes.push(Shape::Path(path));
@@ -898,15 +1027,7 @@ pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
             for s in &mut shapes {
                 match s {
                     Shape::Circle { c, .. } => *c = *c - d,
-                    Shape::Path(path) => {
-                        for seg in &mut path.segs {
-                            seg.a = seg.a - d;
-                            seg.b = seg.b - d;
-                            for q in &mut seg.support {
-                                *q = *q - d;
-                            }
-                        }
-                    }
+                    Shape::Path(path) => path.translate(-d),
                 }
             }
         }
@@ -934,7 +1055,8 @@ pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
     CleanResult { shapes, stats }
 }
 
-fn tiny_gap(tol: f64) -> f64 {
+/// Lengths and gaps at or below this are treated as zero (a thousandth of the tolerance).
+fn negligible(tol: f64) -> f64 {
     tol * 1e-3
 }
 
@@ -1121,5 +1243,125 @@ mod tests {
         assert_eq!(r.stats.closed_paths, 1, "{:?}", r.stats);
         assert_eq!(r.stats.lines, 4, "{:?}", r.stats);
         assert_eq!(r.stats.duplicates_removed, 1);
+    }
+
+    fn on_circle(r: f64, deg: f64) -> P {
+        let a = deg.to_radians();
+        p(r * a.cos(), r * a.sin())
+    }
+
+    /// A 120° arc plus the line that closes it, with a 0.2 radial gap at the arc start.
+    /// The Join gap (0.3) is wider than the Tolerance (0.05), as staff set it when
+    /// paths stay open.
+    fn arc_and_line_with_gap() -> (Drawing, Options) {
+        let r = 20.0;
+        let line = ent(Geom::Line { a: on_circle(r, 120.0), b: on_circle(r, 0.0) + p(0.2, 0.0) });
+        let arc = ent(Geom::Arc { c: p(0.0, 0.0), r, a0: 0.0, a1: 120f64.to_radians() });
+        let d = Drawing { entities: vec![line, arc], ..Default::default() };
+        (d, Options { join_gap: 0.3, ..Options::default() })
+    }
+
+    #[test]
+    fn wide_join_gap_closes_without_moving_geometry_past_tolerance() {
+        let (d, opt) = arc_and_line_with_gap();
+        let res = clean(&d, &opt);
+        assert_eq!((res.stats.closed_paths, res.stats.open_paths), (1, 0), "{:?}", res.stats);
+        assert!(res.stats.max_deviation <= opt.tolerance + 1e-9, "{:?}", res.stats);
+    }
+
+    #[test]
+    fn half_arcs_with_small_gaps_meet_and_become_circle() {
+        let r = 20.0;
+        let upper = ent(Geom::Arc { c: p(0.0, 0.0), r, a0: 0.0, a1: PI });
+        // lower half, nudged so both joints have a 0.01 gap
+        let lower = ent(Geom::Arc { c: p(0.0, 0.01), r, a0: PI, a1: 2.0 * PI });
+        let d = Drawing { entities: vec![upper, lower], ..Default::default() };
+        let opt = Options::default();
+        let res = clean(&d, &opt);
+        assert_eq!(res.stats.circles, 1, "{:?}", res.stats);
+        assert!(res.stats.max_deviation <= opt.tolerance + 1e-9, "{:?}", res.stats);
+    }
+
+    #[test]
+    fn closing_never_leaves_a_zero_length_or_unclosed_end() {
+        // every closed path must end exactly where it starts (the DXF writer relies on it)
+        let (d, opt) = arc_and_line_with_gap();
+        let res = clean(&d, &opt);
+        for s in &res.shapes {
+            if let Shape::Path(path) = s {
+                assert_exactly_closed(path);
+                assert!(path.segs.iter().all(|s| s.chord() > 0.0));
+            }
+        }
+    }
+
+    fn assert_exactly_closed(path: &Path) {
+        assert!(path.closed);
+        assert_eq!(path.end(), path.start(), "closed path must end where it starts");
+        for w in path.segs.windows(2) {
+            assert_eq!(w[0].b, w[1].a, "segments must be continuous");
+        }
+    }
+
+    fn only_path(res: &CleanResult) -> &Path {
+        let paths: Vec<&Path> = res.shapes.iter().filter_map(|s| if let Shape::Path(p) = s { Some(p) } else { None }).collect();
+        assert_eq!(paths.len(), 1, "{:?}", res.stats);
+        paths[0]
+    }
+
+    #[test]
+    fn closed_polyline_with_tiny_closing_gap_closes_exactly() {
+        // last vertex repeats the first up to 1e-5 (as exporters often write it)
+        let pts = vec![p(0.0, 0.0), p(30.0, 0.0), p(30.0, 20.0), p(0.0, 20.0), p(1e-5, 0.0)];
+        let d = Drawing { entities: vec![ent(Geom::Poly { pts, bulges: vec![0.0; 5], closed: true })], ..Default::default() };
+        let res = clean(&d, &Options::default());
+        assert_eq!((res.stats.closed_paths, res.stats.lines), (1, 4), "{:?}", res.stats);
+        assert_exactly_closed(only_path(&res));
+    }
+
+    #[test]
+    fn corner_gap_is_bridged_and_original_corner_stays_put() {
+        // rectangle of lines; the last edge stops 0.2 short of the first corner
+        let (a, b, c, e) = (p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0));
+        let ents = vec![
+            ent(Geom::Line { a, b }),
+            ent(Geom::Line { a: b, b: c }),
+            ent(Geom::Line { a: c, b: e }),
+            ent(Geom::Line { a: e, b: p(0.0, 0.2) }),
+        ];
+        let d = Drawing { entities: ents, ..Default::default() };
+        let opt = Options { join_gap: 0.3, ..Options::default() };
+        let res = clean(&d, &opt);
+        assert_eq!((res.stats.closed_paths, res.stats.open_paths), (1, 0), "{:?}", res.stats);
+        assert!(res.stats.max_deviation <= opt.tolerance + 1e-9, "{:?}", res.stats);
+        let path = only_path(&res);
+        assert_exactly_closed(path);
+        // meeting halfway would have cut the corner; the bridge keeps (0,0) as a vertex
+        assert!(path.segs.iter().any(|s| s.a == a), "corner moved: {:?}", path.segs);
+    }
+
+    #[test]
+    fn collinear_lines_across_wide_gap_join_into_one_line() {
+        let ents = vec![ent(Geom::Line { a: p(0.0, 0.0), b: p(10.0, 0.0) }), ent(Geom::Line { a: p(10.2, 0.0), b: p(20.0, 0.0) })];
+        let d = Drawing { entities: ents, ..Default::default() };
+        let opt = Options { join_gap: 0.3, ..Options::default() };
+        let res = clean(&d, &opt);
+        assert_eq!((res.stats.open_paths, res.stats.lines), (1, 1), "{:?}", res.stats);
+        let path = only_path(&res);
+        assert_eq!((path.start(), path.end()), (p(0.0, 0.0), p(20.0, 0.0)));
+    }
+
+    // Not reachable through clean() today (arcs are split into <= 90° pieces before joining),
+    // so this guards Path::close directly.
+    #[test]
+    fn lone_segment_closes_exactly() {
+        let r = 10.0;
+        let arc = Seg::new(on_circle(r, 0.0), on_circle(r, 359.0), (359f64.to_radians() / 4.0).tan());
+        for seg in [arc.clone(), Seg { b: arc.a + p(1e-6, 0.0), ..arc.clone() }] {
+            let mut path = Path { segs: vec![seg], closed: false, layer: "0".into() };
+            path.close(0.05);
+            assert_exactly_closed(&path);
+            assert!(path.segs.iter().all(|s| s.chord() > 0.0), "{:?}", path.segs);
+        }
     }
 }

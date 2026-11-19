@@ -10,7 +10,7 @@ fn vertex_counts(res: &CleanResult) -> Vec<usize> {
         .shapes
         .iter()
         .map(|s| match s {
-            Shape::Path(p) => p.segs.len(),
+            Shape::Path(p) => p.segs().len(),
             Shape::Circle { .. } => 0,
         })
         .collect();
@@ -76,7 +76,7 @@ fn illustrator_rounded_rect_and_hole_become_true_arcs() {
         match shape {
             Shape::Circle { r, .. } => assert!((r - 20.0).abs() < 1e-6, "circle r = {r}"),
             Shape::Path(p) => {
-                for seg in p.segs.iter().filter(|s| !s.is_line()) {
+                for seg in p.segs().iter().filter(|s| !s.is_line()) {
                     let r = seg.arc().unwrap().r;
                     assert!((r - 15.0).abs() < 1e-6, "corner r = {r}");
                 }

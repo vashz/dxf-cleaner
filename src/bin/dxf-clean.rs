@@ -13,7 +13,7 @@ fn main() {
         match a.as_str() {
             "-o" | "--output" => output = args.next().map(PathBuf::from),
             "--tol" => opt.tolerance = args.next().and_then(|v| v.parse().ok()).unwrap_or(opt.tolerance),
-            "--join" => opt.join_tolerance = args.next().and_then(|v| v.parse().ok()).unwrap_or(opt.join_tolerance),
+            "--join" => opt.join_gap = args.next().and_then(|v| v.parse().ok()).unwrap_or(opt.join_gap),
             "--lines-arcs" => mode = OutputMode::LinesAndArcs,
             "--origin" => opt.move_to_origin = true,
             "--keep-duplicates" => opt.remove_duplicates = false,
