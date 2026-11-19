@@ -48,6 +48,8 @@ dxf-clean input.dxf [-o output.dxf] [--tol 0.05] [--join 0.05] [--no-join] [--li
 
 Without `-o` it writes `<name>_clean.dxf` beside the input. The switches match the window's settings: `--no-join` turns off "Join touching paths", `--lines-arcs` exports separate LINE / ARC entities, `--origin` moves the drawing to 0,0, `--keep-duplicates` turns off "Remove duplicate geometry", and `--layer0` puts everything on layer 0. `dxf-clean --help` prints the same list.
 
+A mistake on the command line stops the run before anything is read or written: an unknown switch, a second input file, `-o` without a file name, or `--tol` / `--join` without a number. So does a `--tol` of 0 or less, or a negative `--join`. `dxf-clean` prints `error: …` naming the argument, then the usage line, and exits with code 2. Read or write failures exit with code 1.
+
 ## Packaging for staff
 
 ```powershell
