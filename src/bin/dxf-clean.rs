@@ -20,7 +20,7 @@ fn main() {
             "--lines-arcs" => mode = OutputMode::LinesAndArcs,
             "--origin" => opt.move_to_origin = true,
             "--keep-duplicates" => opt.remove_duplicates = false,
-            "--layer0" => opt.single_layer = Some("0".into()),
+            "--layer0" => opt.put_everything_on_layer_0(true),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return;

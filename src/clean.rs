@@ -33,6 +33,14 @@ impl Default for Options {
     }
 }
 
+impl Options {
+    /// The window's "Put everything on layer 0" and `dxf-clean --layer0`: on puts every
+    /// shape on layer 0, off keeps the source layers.
+    pub fn put_everything_on_layer_0(&mut self, on: bool) {
+        self.single_layer = on.then(|| "0".to_string());
+    }
+}
+
 /// The two distances every closing and joining decision needs.
 #[derive(Clone, Copy, Debug)]
 struct Limits {
@@ -1058,6 +1066,15 @@ mod tests {
 
     fn ent(geom: Geom) -> Entity {
         Entity { layer: "0".into(), kind: "TEST", geom }
+    }
+
+    #[test]
+    fn everything_on_layer_0_can_be_switched_on_and_off() {
+        let mut opt = Options::default();
+        opt.put_everything_on_layer_0(true);
+        assert_eq!(opt.single_layer.as_deref(), Some("0"));
+        opt.put_everything_on_layer_0(false);
+        assert_eq!(opt.single_layer, None, "back to the source layers");
     }
 
     #[test]

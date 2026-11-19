@@ -5,7 +5,7 @@ use crate::dxf_read::{read_file, Drawing};
 use crate::dxf_write::{write_dxf, OutputMode};
 use crate::geom::BBox;
 use crate::spans::{outline, Outline};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// What the "before" preview shows of the source drawing.
 pub struct Before {
@@ -37,9 +37,9 @@ impl Job {
         Ok(Job { source, drawing })
     }
 
-    /// The file the drawing was read from.
-    pub fn source(&self) -> &Path {
-        &self.source
+    /// The source's file name, without its folder, as the window shows it.
+    pub fn file_name(&self) -> String {
+        self.source.file_name().unwrap_or_default().to_string_lossy().into_owned()
     }
 
     /// The drawing as read: its entities, what was ignored, and its units.
@@ -94,9 +94,9 @@ mod tests {
     }
 
     #[test]
-    fn source_is_the_file_that_was_opened() {
+    fn file_name_is_the_source_without_its_folder() {
         let job = Job::open(fixture("illustrator_polluted.dxf")).unwrap();
-        assert_eq!(job.source(), fixture("illustrator_polluted.dxf"));
+        assert_eq!(job.file_name(), "illustrator_polluted.dxf");
     }
 
     #[test]
