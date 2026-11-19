@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn before_shows_each_entity_with_its_nodes_and_the_extent_of_the_drawing() {
-        let two_lines = "0
+        let lines_and_circle = "0
 SECTION
 2
 ENTITIES
@@ -161,16 +161,28 @@ CUT
 21
 50
             0
+CIRCLE
+8
+CUT
+10
+150
+20
+25
+40
+10
+            0
 ENDSEC
 0
 EOF
 ";
-        let job = Job::open(temp_dxf("two_lines", two_lines)).unwrap();
+        let job = Job::open(temp_dxf("lines_and_circle", lines_and_circle)).unwrap();
         let before = job.before();
-        assert_eq!(before.outlines.len(), 2);
-        assert_eq!(before.nodes, 4, "each line has a node at both ends");
+        assert_eq!(before.outlines.len(), 3);
+        assert_eq!(before.nodes, 4, "each line has a node at both ends, the circle has none");
+        // the circle around (150, 25) with radius 10 reaches past the lines' right end at x = 100
         let bb = before.bbox;
-        assert_eq!((bb.min.x, bb.min.y, bb.max.x, bb.max.y), (0.0, 0.0, 100.0, 50.0));
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(near(bb.min.x, 0.0) && near(bb.min.y, 0.0) && near(bb.max.x, 160.0) && near(bb.max.y, 50.0), "{bb:?}");
     }
 
     #[test]

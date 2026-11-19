@@ -114,3 +114,17 @@ EOF
     assert!(written.is_file(), "output file not written");
     assert!(summary(&apart).starts_with("output: 0 closed + 2 open paths"), "{}", summary(&apart));
 }
+
+#[test]
+fn without_o_the_clean_file_lands_beside_the_input_and_the_input_is_untouched() {
+    let dir = std::env::temp_dir().join(format!("dxf-clean-cli-test-default-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("part.dxf");
+    let dxf = open_lines(1);
+    std::fs::write(&input, &dxf).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_dxf-clean")).arg(&input).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("part_clean.dxf").is_file(), "part_clean.dxf not written");
+    assert_eq!(std::fs::read_to_string(&input).unwrap(), dxf, "the input was changed");
+}
