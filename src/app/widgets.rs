@@ -73,9 +73,9 @@ pub fn button(ui: &mut Ui, icon: Option<Icon>, label: &str, kind: Kind, height: 
 }
 
 /// A square outlined button showing only `icon`; `label` names it for screen readers and tooltips.
-pub fn icon_button(ui: &mut Ui, icon: Icon, label: &str) -> Response {
+pub fn icon_button(ui: &mut Ui, icon: Icon, label: &str, size: f32) -> Response {
     let enabled = ui.is_enabled();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(BUTTON_H), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     if ui.is_rect_visible(rect) {
         let l = look(Kind::Secondary, enabled, resp.hovered());
         let fg = if enabled { TEXT_2 } else { DISABLED };

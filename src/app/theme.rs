@@ -38,8 +38,10 @@ pub const ERROR_TEXT: Color32 = Color32::from_rgb(0xFF, 0xB4, 0xB4);
 pub const INFO_BG: Color32 = Color32::from_rgb(0x1F, 0x2A, 0x36);
 pub const INFO_BORDER: Color32 = Color32::from_rgb(0x2E, 0x4A, 0x66);
 
-/// Height of toolbar buttons and other large touch targets.
+/// Height of large buttons, such as Open DXF in the empty drop zone.
 pub const BUTTON_H: f32 = 44.0;
+/// Height of the toolbar's buttons; the app icon is drawn to match.
+pub const TOOLBAR_H: f32 = 36.0;
 
 /// Dark Workbench look, whatever the Windows theme is.
 pub fn apply(ctx: &egui::Context) {
