@@ -2,7 +2,6 @@
 
 use dxf_converter::clean::Path as CPath;
 use dxf_converter::geom::{BBox, P};
-use dxf_converter::spans::{outline, Outline};
 use dxf_converter::*;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use std::path::PathBuf;
@@ -49,11 +48,8 @@ struct View {
 }
 
 struct App {
-    path: Option<PathBuf>,
-    dwg: Option<Drawing>,
-    before: Vec<Outline>,
-    before_nodes: usize,
-    bbox: BBox,
+    job: Option<Job>,
+    before: Before,
     result: Option<CleanResult>,
     result_stale: bool,
     opt: Options,
@@ -68,11 +64,8 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         App {
-            path: None,
-            dwg: None,
-            before: Vec::new(),
-            before_nodes: 0,
-            bbox: BBox::empty(),
+            job: None,
+            before: Before::default(),
             result: None,
             result_stale: false,
             opt: Options::default(),
@@ -88,24 +81,15 @@ impl Default for App {
 
 impl App {
     fn load(&mut self, path: PathBuf) {
-        match read_file(&path) {
-            Ok(dwg) => {
-                self.before = dwg.entities.iter().map(|e| outline(&e.geom)).collect();
-                self.before_nodes = self.before.iter().map(|o| o.nodes.len()).sum();
-                let mut bb = BBox::empty();
-                for o in &self.before {
-                    for q in &o.pts {
-                        bb.add(*q);
-                    }
-                }
-                self.bbox = bb;
+        match Job::open(path) {
+            Ok(job) => {
+                self.before = job.before();
                 self.status = format!(
                     "Loaded {} ({} entities). Click \"Clean Up\".",
-                    path.file_name().unwrap_or_default().to_string_lossy(),
-                    dwg.entities.len()
+                    job.source().file_name().unwrap_or_default().to_string_lossy(),
+                    job.drawing().entities.len()
                 );
-                self.dwg = Some(dwg);
-                self.path = Some(path);
+                self.job = Some(job);
                 self.result = None;
                 self.view = None;
                 self.error = None;
@@ -121,10 +105,10 @@ impl App {
     }
 
     fn run_clean(&mut self) {
-        let Some(dwg) = &self.dwg else { return };
+        let Some(job) = &self.job else { return };
         self.opt.single_layer = if self.one_layer { Some("0".into()) } else { None };
         let t = std::time::Instant::now();
-        let res = clean(dwg, &self.opt);
+        let res = job.clean(&self.opt);
         let s = &res.stats;
         self.status = format!(
             "Cleaned in {} ms: {} closed / {} open paths, {} lines, {} arcs, {} circles.",
@@ -143,7 +127,7 @@ impl App {
     }
 
     fn export_dialog(&mut self) {
-        let Some(res) = &self.result else { return };
+        let (Some(job), Some(res)) = (&self.job, &self.result) else { return };
         if let Some(warning) = res.stats.open_path_warning() {
             let answer = rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Warning)
@@ -155,20 +139,14 @@ impl App {
                 return;
             }
         }
-        let (dir, name) = match &self.path {
-            Some(p) => (
-                p.parent().map(|d| d.to_path_buf()),
-                format!("{}_clean.dxf", p.file_stem().unwrap_or_default().to_string_lossy()),
-            ),
-            None => (None, "clean.dxf".into()),
-        };
-        let mut dlg = rfd::FileDialog::new().add_filter("DXF drawing", &["dxf"]).set_file_name(&name);
-        if let Some(d) = dir {
+        let default = job.default_output();
+        let name = default.file_name().unwrap_or_default().to_string_lossy();
+        let mut dlg = rfd::FileDialog::new().add_filter("DXF drawing", &["dxf"]).set_file_name(name);
+        if let Some(d) = default.parent() {
             dlg = dlg.set_directory(d);
         }
         if let Some(out) = dlg.save_file() {
-            let units = self.dwg.as_ref().and_then(|d| d.insunits);
-            let text = write_dxf(&res.shapes, self.mode, units);
+            let text = job.dxf_text(res, self.mode);
             match std::fs::write(&out, text) {
                 Ok(()) => self.status = format!("Exported {}", out.display()),
                 Err(e) => self.error = Some(format!("Could not write {}: {e}", out.display())),
@@ -177,7 +155,7 @@ impl App {
     }
 
     fn result_bbox(&self) -> BBox {
-        let mut bb = self.bbox;
+        let mut bb = self.before.bbox;
         if let Some(r) = &self.result {
             for s in &r.shapes {
                 bb.union(&s.bbox());
@@ -287,12 +265,12 @@ impl App {
         draw_grid(&painter, rect, &v);
 
         if !after {
-            for o in &self.before {
+            for o in &self.before.outlines {
                 let pts: Vec<Pos2> = o.pts.iter().map(|q| to_screen(&v, rect, *q)).collect();
                 painter.add(egui::Shape::line(pts, Stroke::new(1.2, C_BEFORE)));
             }
             if self.show_nodes {
-                for o in &self.before {
+                for o in &self.before.outlines {
                     for q in &o.nodes {
                         painter.circle_filled(to_screen(&v, rect, *q), 2.2, C_NODE_BEFORE);
                     }
@@ -315,7 +293,7 @@ impl App {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                if self.dwg.is_some() { "Click \"Clean Up\" to see the result" } else { "" },
+                if self.job.is_some() { "Click \"Clean Up\" to see the result" } else { "" },
                 egui::FontId::proportional(16.0),
                 Color32::GRAY,
             );
@@ -362,7 +340,7 @@ impl eframe::App for App {
                 if ui.add(egui::Button::new(egui::RichText::new("📂  Open DXF…").size(16.0))).clicked() {
                     self.open_dialog();
                 }
-                let can_clean = self.dwg.is_some();
+                let can_clean = self.job.is_some();
                 let clean_label = if self.result_stale { "✨  Clean Up (settings changed)" } else { "✨  Clean Up" };
                 if ui
                     .add_enabled(can_clean, egui::Button::new(egui::RichText::new(clean_label).size(16.0).strong()))
@@ -383,8 +361,8 @@ impl eframe::App for App {
                 }
                 ui.checkbox(&mut self.show_nodes, "Show nodes");
                 ui.separator();
-                if let Some(p) = &self.path {
-                    ui.label(egui::RichText::new(p.file_name().unwrap_or_default().to_string_lossy()).strong());
+                if let Some(job) = &self.job {
+                    ui.label(egui::RichText::new(job.source().file_name().unwrap_or_default().to_string_lossy()).strong());
                 }
             });
             ui.add_space(6.0);
@@ -402,7 +380,7 @@ impl eframe::App for App {
 
         egui::Panel::left("settings").resizable(false).exact_size(270.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let units = units_name(self.dwg.as_ref().and_then(|d| d.insunits));
+                let units = units_name(self.job.as_ref().and_then(|j| j.drawing().insunits));
                 ui.heading("Settings");
                 let mut changed = false;
                 ui.label(format!("Tolerance ({units})"));
@@ -430,7 +408,7 @@ impl eframe::App for App {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.heading("Before");
-                if let Some(d) = &self.dwg {
+                if let Some(d) = self.job.as_ref().map(Job::drawing) {
                     egui::Grid::new("before_stats").num_columns(2).show(ui, |ui| {
                         for (k, v) in &d.counts {
                             ui.label(k);
@@ -438,7 +416,7 @@ impl eframe::App for App {
                             ui.end_row();
                         }
                         ui.label("Nodes / points");
-                        ui.label(self.before_nodes.to_string());
+                        ui.label(self.before.nodes.to_string());
                         ui.end_row();
                     });
                     if !d.skipped.is_empty() {
@@ -498,7 +476,7 @@ impl eframe::App for App {
             let w = (full.width() - gap) / 2.0;
             let left = Rect::from_min_size(full.min, Vec2::new(w, full.height()));
             let right = Rect::from_min_size(full.min + Vec2::new(w + gap, 0.0), Vec2::new(w, full.height()));
-            if self.dwg.is_none() {
+            if self.job.is_none() {
                 let painter = ui.painter_at(full);
                 painter.rect_filled(full, 4.0, BG);
                 painter.text(
