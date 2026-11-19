@@ -14,7 +14,6 @@ mod widgets;
 
 use canvas::View;
 use dxf_cleaner::geom::{BBox, P};
-use dxf_cleaner::spans::{Outline, outline};
 use dxf_cleaner::*;
 use eframe::egui::{self, Rect, TextureHandle, UiBuilder, Vec2};
 use export_dialog::ExportWarning;
@@ -24,11 +23,10 @@ use std::path::PathBuf;
 pub const ICON_PNG: &[u8] = include_bytes!("../../assets/icon-256.png");
 
 pub struct App {
-    path: Option<PathBuf>,
-    dwg: Option<Drawing>,
-    before: Vec<Outline>,
-    before_nodes: usize,
-    bbox: BBox,
+    /// The open source file and its drawing.
+    job: Option<Job>,
+    /// What the Before view shows of `job`.
+    before: Before,
     result: Option<CleanResult>,
     result_stale: bool,
     /// The Tolerance `result` was cleaned with; the setting may have changed since.
@@ -54,11 +52,8 @@ impl App {
             ctx.load_texture("app-icon", img, opts)
         });
         App {
-            path: None,
-            dwg: None,
-            before: Vec::new(),
-            before_nodes: 0,
-            bbox: BBox::empty(),
+            job: None,
+            before: Before::default(),
             result: None,
             result_stale: false,
             result_tolerance: 0.0,
@@ -75,29 +70,18 @@ impl App {
     }
 
     pub fn load(&mut self, path: PathBuf) {
-        match read_file(&path) {
-            Ok(dwg) => {
-                self.before = dwg.entities.iter().map(|e| outline(&e.geom)).collect();
-                self.before_nodes = self.before.iter().map(|o| o.nodes.len()).sum();
-                let mut bb = BBox::empty();
-                for o in &self.before {
-                    for q in &o.pts {
-                        bb.add(*q);
-                    }
-                }
-                self.bbox = bb;
-                self.dwg = Some(dwg);
-                self.path = Some(path);
+        match Job::open(path) {
+            Ok(job) => {
+                self.before = job.before();
+                self.job = Some(job);
                 self.result = None;
                 self.result_stale = false;
                 self.view = None;
                 self.fit_to = None;
                 self.notice = None;
             }
-            Err(e) => {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                self.notice = Some(Notice::error(format!("Could not open {name}: {e}")));
-            }
+            // Job::open's message already names the file.
+            Err(e) => self.notice = Some(Notice::error(e)),
         }
     }
 
@@ -108,9 +92,9 @@ impl App {
     }
 
     fn run_clean(&mut self) {
-        let Some(dwg) = &self.dwg else { return };
-        self.opt.single_layer = if self.one_layer { Some("0".into()) } else { None };
-        self.result = Some(clean(dwg, &self.opt));
+        let Some(job) = &self.job else { return };
+        self.opt.put_everything_on_layer_0(self.one_layer);
+        self.result = Some(job.clean(&self.opt));
         self.result_stale = false;
         self.result_tolerance = self.opt.tolerance;
         if self.opt.move_to_origin {
@@ -129,21 +113,15 @@ impl App {
     }
 
     fn save_dialog(&mut self) {
-        let Some(res) = &self.result else { return };
-        let (dir, name) = match &self.path {
-            Some(p) => (
-                p.parent().map(|d| d.to_path_buf()),
-                format!("{}_clean.dxf", p.file_stem().unwrap_or_default().to_string_lossy()),
-            ),
-            None => (None, "clean.dxf".into()),
-        };
-        let mut dlg = rfd::FileDialog::new().add_filter("DXF drawing", &["dxf"]).set_file_name(&name);
-        if let Some(d) = dir {
+        let (Some(job), Some(res)) = (&self.job, &self.result) else { return };
+        let default = job.default_output();
+        let name = default.file_name().unwrap_or_default().to_string_lossy();
+        let mut dlg = rfd::FileDialog::new().add_filter("DXF drawing", &["dxf"]).set_file_name(name);
+        if let Some(d) = default.parent() {
             dlg = dlg.set_directory(d);
         }
         if let Some(out) = dlg.save_file() {
-            let units = self.dwg.as_ref().and_then(|d| d.insunits);
-            let text = write_dxf(&res.shapes, self.mode, units);
+            let text = job.dxf_text(res, self.mode);
             self.notice = Some(match std::fs::write(&out, text) {
                 Ok(()) => Notice::info(format!("Exported {}", out.file_name().unwrap_or_default().to_string_lossy())),
                 Err(e) => Notice::error(format!("Could not write {}: {e}", out.display())),
@@ -172,7 +150,7 @@ impl App {
     }
 
     fn units(&self) -> &'static str {
-        match self.dwg.as_ref().and_then(|d| d.insunits) {
+        match self.job.as_ref().and_then(|j| j.drawing().insunits) {
             Some(1) => "in",
             Some(2) => "ft",
             Some(4) => "mm",
@@ -210,7 +188,7 @@ impl eframe::App for App {
         settings::show(self, ui);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG).inner_margin(12)).show(ui, |ui| {
             let area = ui.available_rect_before_wrap();
-            if self.dwg.is_none() {
+            if self.job.is_none() {
                 empty::show(self, ui);
             } else {
                 self.workbench(ui);

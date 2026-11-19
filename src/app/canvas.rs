@@ -83,7 +83,7 @@ pub fn draw_path(painter: &egui::Painter, rect: Rect, v: &View, path: &CPath, no
 
 impl App {
     fn result_bbox(&self) -> BBox {
-        let mut bb = self.bbox;
+        let mut bb = self.before.bbox;
         if let Some(r) = &self.result {
             for s in &r.shapes {
                 bb.union(&s.bbox());
@@ -126,12 +126,12 @@ impl App {
         draw_grid(&painter, rect.shrink(1.0), &v);
 
         if !after {
-            for o in &self.before {
+            for o in &self.before.outlines {
                 let pts: Vec<Pos2> = o.pts.iter().map(|q| to_screen(&v, rect, *q)).collect();
                 painter.add(egui::Shape::line(pts, Stroke::new(1.2, C_BEFORE)));
             }
             if self.show_nodes {
-                for o in &self.before {
+                for o in &self.before.outlines {
                     for q in &o.nodes {
                         painter.circle_filled(to_screen(&v, rect, *q), 2.2, C_NODE_BEFORE);
                     }
@@ -170,7 +170,7 @@ impl App {
             });
             ("AFTER", detail.unwrap_or_default())
         } else {
-            ("BEFORE", format!("original · {} nodes", thousands(self.before_nodes)))
+            ("BEFORE", format!("original · {} nodes", thousands(self.before.nodes)))
         };
         let title_pos = rect.left_top() + Vec2::new(14.0, 12.0);
         let title_rect = painter.text(title_pos, egui::Align2::LEFT_TOP, title, FontId::proportional(11.5), TEXT);

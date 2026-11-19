@@ -3,7 +3,7 @@
 use super::App;
 use super::theme::*;
 use super::widgets::{self, thousands};
-use dxf_cleaner::OutputMode;
+use dxf_cleaner::{Job, OutputMode};
 use eframe::egui::{self, Align, Color32, CornerRadius, DragValue, Layout, Margin, RichText, Stroke, TextStyle};
 use std::ops::RangeInclusive;
 
@@ -51,12 +51,12 @@ fn sections(app: &mut App, ui: &mut egui::Ui) {
 
     ui.add_space(18.0);
     widgets::section_heading(ui, "Source file");
-    match &app.dwg {
+    match app.job.as_ref().map(Job::drawing) {
         Some(d) => {
             for (k, v) in &d.counts {
                 row(ui, k, &thousands(*v), TEXT_2, TEXT);
             }
-            row(ui, "Nodes", &thousands(app.before_nodes), TEXT_2, TEXT);
+            row(ui, "Nodes", &thousands(app.before.nodes), TEXT_2, TEXT);
             for (k, v) in &d.skipped {
                 row(ui, &format!("Ignored {k}"), &thousands(*v), MUTED, MUTED)
                     .on_hover_text("Not cut geometry: left out of the result");

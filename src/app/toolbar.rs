@@ -19,7 +19,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if widgets::button(ui, Some(Icon::Folder), "Open DXF", Kind::Secondary, TOOLBAR_H).clicked() {
                 app.open_dialog();
             }
-            let loaded = app.dwg.is_some();
+            let loaded = app.job.is_some();
             let clean = ui.add_enabled_ui(loaded, |ui| widgets::button(ui, Some(Icon::Wand), "Clean Up", Kind::Primary, TOOLBAR_H));
             if clean.inner.clicked() {
                 app.run_clean();
@@ -36,9 +36,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.view = None;
                     app.fit_to = None;
                 }
-                if let Some(p) = &app.path {
-                    let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-                    file_chip(ui, &name, app.units());
+                if let Some(job) = &app.job {
+                    file_chip(ui, &job.file_name(), app.units());
                 }
             });
         });
