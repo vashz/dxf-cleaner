@@ -51,3 +51,29 @@ _Avoid_: Join tolerance, snap distance
 **Bridge**:
 A straight segment that fills a gap between two path ends that could not meet without moving the original geometry past the tolerance. It is the only part of the output not traced from the original geometry.
 _Avoid_: Filler, patch
+
+### Installer
+
+**Setup**:
+The one-file program staff run to put DXF Converter on their own Windows account. It carries exactly one version of the app.
+_Avoid_: Installer package, MSI
+
+**Install**:
+Putting the app on an account that does not have it yet.
+_Avoid_: Deploy
+
+**Update**:
+Running a setup whose version is newer than the installed one; it replaces the app in place.
+_Avoid_: Upgrade, patch
+
+**Reinstall**:
+Running a setup whose version is the same as the installed one, or when the installed version is unknown.
+_Avoid_: Repair
+
+**Downgrade**:
+Running a setup whose version is older than the installed one. Setup asks first, and refuses when run quietly.
+_Avoid_: Rollback
+
+**Uninstall**:
+Removing the app, its shortcuts and its "Apps & features" entry from the account.
+_Avoid_: Delete, remove
