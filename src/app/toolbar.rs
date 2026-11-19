@@ -11,7 +11,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             // The window title already names the app; the icon alone marks it here.
-            if let Some(tex) = &app.icon {
+            if let Some(tex) = app.logo.texture(ui.ctx(), TOOLBAR_H) {
                 ui.add(egui::Image::new((tex.id(), vec2(TOOLBAR_H, TOOLBAR_H)))).on_hover_text("DXF Cleaner");
             }
             ui.add_space(6.0);

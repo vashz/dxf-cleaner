@@ -1,4 +1,7 @@
-"""Builds assets/icon.ico (+ icon-256.png) from generated SVG artwork.
+"""Builds assets/icon.ico (+ icon-256.png, icon-small-256.png) from generated SVG artwork.
+
+icon-256.png and icon-small-256.png are the two designs the app scales down for its
+toolbar logo: the small one (no label, bolder strokes) for 40 pixels and under.
 
 Requires Inkscape (for SVG -> PNG). No Python packages needed.
 Run:  py -I assets/build_icon.py
@@ -121,7 +124,9 @@ def main() -> None:
         write_ico(os.path.join(HERE, "icon.ico"), images)
         with open(os.path.join(HERE, "icon-256.png"), "wb") as f:
             f.write(dict(images)[256])
-    print("wrote icon.ico, icon-256.png, icon.svg, icon-small.svg")
+        with open(os.path.join(HERE, "icon-small-256.png"), "wb") as f:
+            f.write(render(svg(True), 256, tmp))
+    print("wrote icon.ico, icon-256.png, icon-small-256.png, icon.svg, icon-small.svg")
 
 
 if __name__ == "__main__":
