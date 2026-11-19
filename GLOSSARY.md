@@ -75,5 +75,5 @@ Running a setup whose version is older than the installed one. Setup asks first,
 _Avoid_: Rollback
 
 **Uninstall**:
-Removing the app, its shortcuts and its "Apps & features" entry from the account.
-_Avoid_: Delete, remove
+Removing the app, its shortcuts and its "Apps & features" entry from the account. Staff see it as "Remove DXF Converter from this computer?", so *remove* means the same thing.
+_Avoid_: Delete
