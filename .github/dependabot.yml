@@ -19,6 +19,11 @@ updates:
         update-types:
           - minor
           - patch
+        # egui's 0.x minor versions usually change the API, so an egui/eframe
+        # update gets a PR of its own instead of holding back the whole group.
+        exclude-patterns:
+          - "eframe"
+          - "egui*"
 
   # Actions used in .github/workflows.
   - package-ecosystem: github-actions
