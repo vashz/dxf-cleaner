@@ -1,7 +1,8 @@
 //! Minimal, tolerant ASCII DXF reader. Extracts 2D cutting geometry
 //! (LINE, ARC, CIRCLE, ELLIPSE, LWPOLYLINE, POLYLINE, SPLINE, INSERT) in world coordinates.
 
-use crate::geom::{p, Affine, P};
+use crate::geom::{p, Affine, LINE_BULGE_EPS, P};
+use crate::spans::{polyline_spans, Span};
 use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::PI;
 
@@ -509,7 +510,7 @@ pub fn transform_geom(g: Geom, xf: &Affine) -> Vec<Geom> {
             vec![Geom::Ellipse { c: xf.apply(c), u: xf.apply_vec(u), v: xf.apply_vec(v), t0, t1 }]
         }
         Geom::Poly { pts, bulges, closed } => {
-            let has_arcs = bulges.iter().any(|b| b.abs() > 1e-12);
+            let has_arcs = bulges.iter().any(|b| b.abs() >= LINE_BULGE_EPS);
             if sim.is_some() || !has_arcs {
                 let sign = if mirrored { -1.0 } else { 1.0 };
                 vec![Geom::Poly {
@@ -519,19 +520,16 @@ pub fn transform_geom(g: Geom, xf: &Affine) -> Vec<Geom> {
                 }]
             } else {
                 // Non-uniform scale: tessellate bulged segments; the cleaner refits them.
-                let n = pts.len();
-                let segs = if closed { n } else { n - 1 };
                 let mut out_pts = Vec::new();
-                for k in 0..segs {
-                    let a = pts[k];
-                    let b = pts[(k + 1) % n];
-                    let s = crate::geom::Seg::new(a, b, bulges[k]);
+                for span in polyline_spans(&pts, &bulges, closed) {
+                    let Span::Bulge { a, b, bulge } = span else { unreachable!("polylines are made of bulge spans") };
+                    let s = crate::geom::Seg::new(a, b, bulge);
                     let steps = if s.is_line() { 1 } else { 64 };
                     let smp = s.samples(steps);
                     out_pts.extend_from_slice(&smp[..smp.len() - 1]);
                 }
                 if !closed {
-                    out_pts.push(pts[n - 1]);
+                    out_pts.push(pts[pts.len() - 1]);
                 }
                 let bl = vec![0.0; out_pts.len()];
                 vec![Geom::Poly { pts: out_pts.iter().map(|q| xf.apply(*q)).collect(), bulges: bl, closed }]
@@ -545,5 +543,138 @@ pub fn transform_geom(g: Geom, xf: &Affine) -> Vec<Geom> {
             fit: fit.iter().map(|q| xf.apply(*q)).collect(),
             closed,
         }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A DXF with `blocks` in its BLOCKS section and `entities` in its ENTITIES section.
+    fn dxf(blocks: &str, entities: &str) -> Drawing {
+        let text = format!("0\nSECTION\n2\nBLOCKS\n{blocks}0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n");
+        read_bytes(text.as_bytes()).unwrap()
+    }
+
+    fn block(name: &str, body: &str) -> String {
+        format!("0\nBLOCK\n8\n0\n2\n{name}\n70\n0\n10\n0\n20\n0\n{body}0\nENDBLK\n")
+    }
+
+    fn only(d: &Drawing) -> &Geom {
+        assert_eq!(d.entities.len(), 1, "{:?}", d.entities);
+        &d.entities[0].geom
+    }
+
+    fn near(a: P, b: P) -> bool {
+        a.dist(b) < 1e-9
+    }
+
+    fn on_arc(c: P, r: f64, a: f64) -> P {
+        c + p(a.cos(), a.sin()) * r
+    }
+
+    #[test]
+    fn mirrored_insert_keeps_an_arc_on_the_mirrored_points() {
+        // right half of a circle around (10, 10), mirrored about the insert point's y axis
+        let arc = "0\nARC\n8\n0\n10\n10\n20\n10\n40\n10\n50\n270\n51\n90\n";
+        let d = dxf(&block("B", arc), "0\nINSERT\n8\nCUT\n2\nB\n10\n100\n20\n0\n41\n-1\n42\n1\n");
+        let Geom::Arc { c, r, a0, a1 } = *only(&d) else { panic!("{:?}", d.entities) };
+        assert!(near(c, p(90.0, 10.0)) && (r - 10.0).abs() < 1e-9);
+        let ends = [on_arc(c, r, a0), on_arc(c, r, a1)];
+        assert!(ends.iter().any(|q| near(*q, p(90.0, 0.0))) && ends.iter().any(|q| near(*q, p(90.0, 20.0))), "{ends:?}");
+        assert!(near(on_arc(c, r, (a0 + a1) / 2.0), p(80.0, 10.0)), "the arc bows away from the mirror line");
+        assert_eq!(d.entities[0].layer, "CUT", "layer 0 inherits the INSERT's layer");
+    }
+
+    #[test]
+    fn unevenly_scaled_insert_turns_a_circle_into_an_ellipse() {
+        let circle = "0\nCIRCLE\n8\n0\n10\n5\n20\n10\n40\n3\n";
+        let d = dxf(&block("B", circle), "0\nINSERT\n8\nCUT\n2\nB\n10\n0\n20\n0\n41\n2\n42\n1\n");
+        let Geom::Ellipse { c, u, v, t0, t1 } = *only(&d) else { panic!("{:?}", d.entities) };
+        assert!(near(c, p(10.0, 10.0)) && near(u, p(6.0, 0.0)) && near(v, p(0.0, 3.0)), "{c:?} {u:?} {v:?}");
+        assert!(t0.abs() < 1e-12 && (t1 - 2.0 * PI).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unevenly_scaled_insert_turns_polyline_arcs_into_points_on_the_stretched_arc() {
+        // a half circle of radius 5 around (5, 0), as one bulged span and a straight closing span
+        let lw = "0
+LWPOLYLINE
+8
+0
+90
+2
+70
+1
+10
+0
+20
+0
+42
+1
+10
+10
+20
+0
+";
+        let d = dxf(&block("B", lw), "0
+INSERT
+8
+CUT
+2
+B
+10
+0
+20
+0
+41
+2
+42
+1
+");
+        let Geom::Poly { pts, bulges, closed } = only(&d) else { panic!("{:?}", d.entities) };
+        assert!(*closed);
+        assert!(pts.len() > 32, "the arc is tessellated: {} points", pts.len());
+        assert!(bulges.iter().all(|b| *b == 0.0));
+        assert!(near(pts[0], p(0.0, 0.0)));
+        for q in pts {
+            // on the ellipse with semi-axes 10 (stretched) and 5 around (10, 0), or on the closing line
+            let on_ellipse = (((q.x - 10.0) / 10.0).powi(2) + (q.y / 5.0).powi(2) - 1.0).abs() < 1e-9;
+            assert!(on_ellipse || q.y.abs() < 1e-9, "{q:?}");
+        }
+        assert!(pts.iter().any(|q| q.y.abs() > 4.99), "the arc keeps its height");
+    }
+
+    #[test]
+    fn polyline_seen_from_below_is_mirrored_in_x_with_its_bulges_flipped() {
+        let lw = "0\nLWPOLYLINE\n8\nCUT\n90\n2\n70\n0\n10\n10\n20\n0\n42\n0.5\n10\n20\n20\n0\n210\n0\n220\n0\n230\n-1\n";
+        let d = dxf("", lw);
+        let Geom::Poly { pts, bulges, closed } = only(&d) else { panic!("{:?}", d.entities) };
+        assert!(near(pts[0], p(-10.0, 0.0)) && near(pts[1], p(-20.0, 0.0)), "{pts:?}");
+        assert_eq!(bulges, &vec![-0.5, 0.0]);
+        assert!(!closed);
+    }
+
+    #[test]
+    fn ellipse_takes_its_minor_axis_from_the_ratio_and_keeps_its_parameters() {
+        let el = |t0: f64, t1: f64| format!("0\nELLIPSE\n8\nCUT\n10\n1\n20\n2\n11\n20\n21\n0\n40\n0.5\n41\n{t0}\n42\n{t1}\n");
+        let d = dxf("", &el(0.5, 4.0));
+        let Geom::Ellipse { c, u, v, t0, t1 } = *only(&d) else { panic!() };
+        assert!(near(c, p(1.0, 2.0)) && near(u, p(20.0, 0.0)) && near(v, p(0.0, 10.0)), "{u:?} {v:?}");
+        assert_eq!((t0, t1), (0.5, 4.0));
+        // an end parameter below the start wraps once around
+        let Geom::Ellipse { t0, t1, .. } = *only(&dxf("", &el(5.0, 1.0))) else { panic!() };
+        assert_eq!(t0, 5.0);
+        assert!((t1 - (1.0 + 2.0 * PI)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn closed_polyline_keeps_the_bulge_on_its_last_vertex() {
+        let lw = "0\nLWPOLYLINE\n8\nCUT\n90\n3\n70\n1\n10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n10\n42\n0.4\n";
+        let d = dxf("", lw);
+        let Geom::Poly { pts, bulges, closed } = only(&d) else { panic!() };
+        assert_eq!(pts.len(), 3);
+        assert_eq!(bulges, &vec![0.0, 0.0, 0.4]);
+        assert!(closed);
     }
 }
