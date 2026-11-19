@@ -288,9 +288,20 @@ impl Stats {
     /// Warning for exporting a result that still has open paths, which nesting software
     /// rejects unless they are marking lines. `None` when every path is closed.
     pub fn open_path_warning(&self) -> Option<String> {
+        let (heading, consequence) = (self.open_path_heading()?, self.open_path_consequence()?);
+        Some(format!("{heading}: {}{}", consequence[..1].to_lowercase(), &consequence[1..]))
+    }
+
+    /// The warning's heading, e.g. "1 open path". `None` when every path is closed.
+    pub fn open_path_heading(&self) -> Option<String> {
         let n = self.open_paths;
-        let (paths, which) = if n == 1 { ("path", "it is a marking line") } else { ("paths", "they are marking lines") };
-        (n > 0).then(|| format!("{n} open {paths}: nesting software will reject this file unless {which}."))
+        (n > 0).then(|| format!("{n} open {}", if n == 1 { "path" } else { "paths" }))
+    }
+
+    /// The warning's sentence: what happens to a file with open paths.
+    pub fn open_path_consequence(&self) -> Option<String> {
+        let which = if self.open_paths == 1 { "it is a marking line" } else { "they are marking lines" };
+        (self.open_paths > 0).then(|| format!("Nesting software will reject this file unless {which}."))
     }
 }
 
@@ -1063,6 +1074,24 @@ fn negligible(tol: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::dxf_read::{Drawing, Entity, Geom};
+
+    #[test]
+    fn open_path_warning_reads_the_same_whole_or_in_parts() {
+        let open = |n| Stats { open_paths: n, ..Stats::default() };
+        assert_eq!(open(0).open_path_warning(), None);
+        assert_eq!(open(0).open_path_heading(), None);
+        assert_eq!(open(0).open_path_consequence(), None);
+        assert_eq!(open(1).open_path_heading().as_deref(), Some("1 open path"));
+        assert_eq!(open(1).open_path_consequence().as_deref(), Some("Nesting software will reject this file unless it is a marking line."));
+        assert_eq!(
+            open(1).open_path_warning().as_deref(),
+            Some("1 open path: nesting software will reject this file unless it is a marking line.")
+        );
+        assert_eq!(
+            open(3).open_path_warning().as_deref(),
+            Some("3 open paths: nesting software will reject this file unless they are marking lines.")
+        );
+    }
 
     fn ent(geom: Geom) -> Entity {
         Entity { layer: "0".into(), kind: "TEST", geom }

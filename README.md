@@ -1,4 +1,4 @@
-# DXF Converter
+# DXF Cleaner
 
 Windows tool that cleans "polluted" DXF exports (e.g. Adobe Illustrator) so cutting
 software gets continuous straight lines and **true arcs** instead of splines that it
@@ -6,10 +6,10 @@ breaks into point-to-point moves.
 
 ## Workflow
 
-1. **Open DXF…** (or drag & drop a file onto the window)
+1. **Open DXF** (or drag & drop a file onto the window)
 2. **Clean Up**
 3. Compare **Before** (left) and **After** (right). Pan/zoom is shared between both views.
-4. **Export DXF…** (saves `<name>_clean.dxf` next to the original by default). If the result
+4. **Export DXF** (saves `<name>_clean.dxf` next to the original by default). If the result
    still has open paths, it first warns that nesting software will reject them unless they
    are marking lines, and asks whether to export anyway. `dxf-clean` prints the same warning
    to stderr and still writes the file.
@@ -40,7 +40,7 @@ Full circles are always written as `CIRCLE`.
 cargo build --release
 ```
 
-Produces `target\release\dxf-converter.exe` (GUI) and `target\release\dxf-clean.exe` (command line):
+Produces `target\release\dxf-cleaner.exe` (GUI) and `target\release\dxf-clean.exe` (command line):
 
 ```powershell
 dxf-clean input.dxf [-o output.dxf] [--tol 0.05] [--join 0.05] [--no-join] [--lines-arcs] [--origin] [--keep-duplicates] [--layer0]
@@ -58,14 +58,15 @@ powershell -ExecutionPolicy Bypass -File .\package.ps1
 
 Runs the tests, builds everything and writes to `dist\`:
 
-- `nhl-dxf-converter-setup-<version>.exe`: one-file installer. Installs for the current
-  Windows user only (no admin rights) to `%LOCALAPPDATA%\Programs\DXF Converter`, adds
+- `nhl-dxf-cleaner-setup-<version>.exe`: one-file installer. Installs for the current
+  Windows user only (no admin rights) to `%LOCALAPPDATA%\Programs\DXF Cleaner`, adds
   Desktop and Start-menu shortcuts and an "Apps & features" entry for uninstalling.
-  Running a newer setup updates in place; an older setup asks before downgrading (and
-  refuses in quiet mode). Setup and uninstall refuse to run while the app is open.
+  Running a newer setup updates in place, including an install from before 0.2.0 under the
+  old name "DXF Converter" (its folder and shortcuts are removed); an older setup asks
+  before downgrading (and refuses in quiet mode). Setup and uninstall refuse to run while the app is open.
   `/quiet` installs silently; `uninstall.exe /uninstall [/quiet]` (in the install folder)
   removes it.
-- `nhl-dxf-converter-<version>-portable.zip`: unzip and run, nothing installed.
+- `nhl-dxf-cleaner-<version>-portable.zip`: unzip and run, nothing installed.
 
 The executables are not code-signed, so Windows SmartScreen may show "Windows protected
 your PC" the first time: click **More info → Run anyway**.

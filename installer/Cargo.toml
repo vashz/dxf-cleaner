@@ -1,8 +1,8 @@
 [package]
-name = "dxf-converter-setup"
+name = "dxf-cleaner-setup"
 version = "0.1.0"
 edition = "2024"
-description = "Per-user installer for DXF Converter (build it with ../package.ps1)"
+description = "Per-user installer for DXF Cleaner (build it with ../package.ps1)"
 publish = false
 
 # Not part of the main crate: this is built after the app, by package.ps1.

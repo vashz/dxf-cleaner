@@ -6,9 +6,17 @@ use crate::version::version_parts;
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
-pub const APP_NAME: &str = "DXF Converter";
-pub const EXE_NAME: &str = "DXF Converter.exe";
+pub const APP_NAME: &str = "DXF Cleaner";
+pub const EXE_NAME: &str = "DXF Cleaner.exe";
 pub const UNINSTALLER: &str = "uninstall.exe";
+/// The app's name before 0.2.0. Setup moves an install under it over to the new name.
+pub const OLD_APP_NAME: &str = "DXF Converter";
+pub const OLD_EXE_NAME: &str = "DXF Converter.exe";
+
+/// Where an install under the old name lives: next to `dir`, in a folder named after it.
+pub fn old_install_dir(dir: &Path) -> PathBuf {
+    dir.with_file_name(OLD_APP_NAME)
+}
 
 /// What this run of Setup is: the version it carries, where it installs, and whether it may ask.
 pub struct Setup {
@@ -125,6 +133,8 @@ pub trait Host {
     fn tell(&mut self, n: &Notice);
     /// Is the app's exe in `dir`?
     fn app_present(&self, dir: &Path) -> bool;
+    /// Is the app installed under its old name in `old_dir`?
+    fn old_install_present(&self, old_dir: &Path) -> bool;
     /// Version recorded by a previous install, if any.
     fn installed_version(&self) -> Option<String>;
     /// Is the app open? An error means it could not be checked.
@@ -139,10 +149,16 @@ pub trait Host {
     fn remove_shortcuts(&mut self) -> Result<(), String>;
     fn unregister(&mut self);
     fn schedule_folder_removal(&mut self, dir: &Path);
+    /// Remove an install under the old name: its exe, its shortcuts and, once Setup has
+    /// exited, its folder. The "Apps & features" entry is shared, so it stays.
+    fn remove_old_install(&mut self, old_dir: &Path) -> Result<(), String>;
 }
 
 pub fn install(host: &mut impl Host, setup: &Setup) -> Result<(), String> {
-    let present = host.app_present(&setup.dir);
+    let old_dir = old_install_dir(&setup.dir);
+    let old_install = host.old_install_present(&old_dir);
+    // An install under the old name counts as the app being present, so it is updated.
+    let present = host.app_present(&setup.dir) || old_install;
     let installed = if present { host.installed_version() } else { None };
     let action = decide(present, installed.as_deref(), &setup.version);
 
@@ -171,6 +187,8 @@ pub fn install(host: &mut impl Host, setup: &Setup) -> Result<(), String> {
     // even if the shortcut step fails (e.g. on a locked-down PC).
     host.register(&setup.dir, &setup.version)?;
     let shortcuts = host.create_shortcuts(&setup.dir);
+    // Only once the new app is in place, so a failure here never leaves no app at all.
+    let old_install_removed = if old_install { host.remove_old_install(&old_dir) } else { Ok(()) };
 
     if !setup.quiet {
         let q = Question::OpenNow {
@@ -182,7 +200,7 @@ pub fn install(host: &mut impl Host, setup: &Setup) -> Result<(), String> {
             host.launch(&setup.dir);
         }
     }
-    shortcuts
+    both(shortcuts, old_install_removed)
 }
 
 /// Refuse while the app is open. If that cannot be checked, carry on: a locked exe still
@@ -198,6 +216,10 @@ pub fn uninstall(host: &mut impl Host, setup: &Setup) -> Result<(), String> {
     ensure_closed(host)?;
     host.remove_app(&setup.dir)?;
     host.remove_shortcuts()?;
+    // No `?`: the app is already gone, so its "Apps & features" entry must go as well,
+    // even when the old install cannot be removed. That failure is reported at the end.
+    let old_dir = old_install_dir(&setup.dir);
+    let old_install_removed = if host.old_install_present(&old_dir) { host.remove_old_install(&old_dir) } else { Ok(()) };
     host.unregister();
     // Tell the user first: this program may live inside the install folder and keeps
     // its own file locked until it exits.
@@ -205,7 +227,15 @@ pub fn uninstall(host: &mut impl Host, setup: &Setup) -> Result<(), String> {
         host.tell(&Notice::Removed);
     }
     host.schedule_folder_removal(&setup.dir);
-    Ok(())
+    old_install_removed
+}
+
+/// Both results of steps that run whatever the other's outcome; neither error is lost.
+fn both(a: Result<(), String>, b: Result<(), String>) -> Result<(), String> {
+    match (a, b) {
+        (Ok(()), r) | (r, Ok(())) => r,
+        (Err(a), Err(b)) => Err(format!("{a}\n\n{b}")),
+    }
 }
 
 #[cfg(test)]
@@ -226,12 +256,15 @@ mod tests {
         RemoveShortcuts,
         Unregister,
         ScheduleFolderRemoval,
+        RemoveOldInstall(PathBuf),
     }
     use Effect::*;
 
     /// A PC that answers from a script and records every effect in order.
     struct Recording {
         present: bool,
+        old_install: bool,
+        old_install_removal: Result<(), String>,
         installed: Option<String>,
         running: Result<bool, String>,
         shortcuts: Result<(), String>,
@@ -241,11 +274,17 @@ mod tests {
 
     impl Recording {
         fn new() -> Self {
-            Recording { present: false, installed: None, running: Ok(false), shortcuts: Ok(()), answers: VecDeque::new(), log: Vec::new() }
+            Recording { present: false, old_install: false, old_install_removal: Ok(()), installed: None, running: Ok(false), shortcuts: Ok(()), answers: VecDeque::new(), log: Vec::new() }
         }
         fn with_app(mut self, version: Option<&str>) -> Self {
             self.present = true;
             self.installed = version.map(str::to_string);
+            self
+        }
+        /// The app is installed under its old name only, at `version`.
+        fn with_old_install(mut self, version: &str) -> Self {
+            self.old_install = true;
+            self.installed = Some(version.to_string());
             self
         }
         fn answering(mut self, answers: &[bool]) -> Self {
@@ -264,6 +303,9 @@ mod tests {
         }
         fn app_present(&self, _: &Path) -> bool {
             self.present
+        }
+        fn old_install_present(&self, _: &Path) -> bool {
+            self.old_install
         }
         fn installed_version(&self) -> Option<String> {
             self.installed.clone()
@@ -304,10 +346,14 @@ mod tests {
         fn schedule_folder_removal(&mut self, _: &Path) {
             self.log.push(ScheduleFolderRemoval);
         }
+        fn remove_old_install(&mut self, old_dir: &Path) -> Result<(), String> {
+            self.log.push(RemoveOldInstall(old_dir.to_path_buf()));
+            self.old_install_removal.clone()
+        }
     }
 
     fn setup(version: &str, quiet: bool) -> Setup {
-        Setup { version: version.to_string(), dir: PathBuf::from(r"C:\Users\staff\AppData\Local\Programs\DXF Converter"), quiet }
+        Setup { version: version.to_string(), dir: PathBuf::from(r"C:\Users\staff\AppData\Local\Programs\DXF Cleaner"), quiet }
     }
 
     fn confirm(action: Action, s: &Setup) -> Effect {
@@ -456,17 +502,89 @@ mod tests {
 
     #[test]
     fn questions_read_as_staff_see_them() {
-        let q = Question::Confirm { action: Action::Update, version: "0.1.2".into(), dir: PathBuf::from(r"C:\Apps\DXF Converter") };
-        assert_eq!(q.title(), "DXF Converter 0.1.2 Setup");
+        let q = Question::Confirm { action: Action::Update, version: "0.1.2".into(), dir: PathBuf::from(r"C:\Apps\DXF Cleaner") };
+        assert_eq!(q.title(), "DXF Cleaner 0.1.2 Setup");
         assert_eq!(
             q.text(),
-            "Update DXF Converter 0.1.2?\n\nIt is installed for your Windows account only (no admin rights needed) in:\nC:\\Apps\\DXF Converter\n\nShortcuts are added to the Desktop and Start menu."
+            "Update DXF Cleaner 0.1.2?\n\nIt is installed for your Windows account only (no admin rights needed) in:\nC:\\Apps\\DXF Cleaner\n\nShortcuts are added to the Desktop and Start menu."
         );
-        let q = Question::OpenNow { version: "0.1.2".into(), exe: PathBuf::from(r"C:\Apps\DXF Converter.exe"), shortcut_error: Some("blocked".into()) };
+        let q = Question::OpenNow { version: "0.1.2".into(), exe: PathBuf::from(r"C:\Apps\DXF Cleaner.exe"), shortcut_error: Some("blocked".into()) };
         assert_eq!(
             q.text(),
-            "DXF Converter is installed, but the shortcuts could not be created:\nblocked\n\nYou can start it from:\nC:\\Apps\\DXF Converter.exe\n\nOpen it now?"
+            "DXF Cleaner is installed, but the shortcuts could not be created:\nblocked\n\nYou can start it from:\nC:\\Apps\\DXF Cleaner.exe\n\nOpen it now?"
         );
-        assert_eq!(Question::ConfirmRemove.title(), "DXF Converter Setup");
+        assert_eq!(Question::ConfirmRemove.title(), "DXF Cleaner Setup");
+    }
+
+    fn old_dir() -> PathBuf {
+        PathBuf::from(r"C:\Users\staff\AppData\Local\Programs\DXF Converter")
+    }
+
+    #[test]
+    fn the_old_install_sits_next_to_the_new_one() {
+        assert_eq!(old_install_dir(&setup("0.2.0", false).dir), old_dir());
+    }
+
+    #[test]
+    fn an_install_under_the_old_name_is_updated_and_then_removed() {
+        let s = setup("0.2.0", false);
+        let mut pc = Recording::new().with_old_install("0.1.4").answering(&[true, false]);
+        assert_eq!(install(&mut pc, &s), Ok(()));
+        assert_eq!(
+            pc.log,
+            [
+                confirm(Action::Update, &s),
+                WriteApp,
+                CopyUninstaller,
+                Register("0.2.0".into()),
+                CreateShortcuts,
+                RemoveOldInstall(old_dir()),
+                open_now(&s, None)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_old_install_removal_is_reported_but_keeps_the_new_app() {
+        let mut pc = Recording::new().with_old_install("0.1.4");
+        pc.old_install_removal = Err("Could not remove DXF Converter.exe".into());
+        assert_eq!(install(&mut pc, &setup("0.2.0", true)), Err("Could not remove DXF Converter.exe".into()));
+        assert_eq!(pc.log, [WriteApp, CopyUninstaller, Register("0.2.0".into()), CreateShortcuts, RemoveOldInstall(old_dir())]);
+    }
+
+    #[test]
+    fn the_old_app_open_blocks_the_update() {
+        let mut pc = Recording::new().with_old_install("0.1.4");
+        pc.running = Ok(true);
+        assert_eq!(install(&mut pc, &setup("0.2.0", true)), Err(close_app_message()));
+        assert_eq!(pc.log, []);
+    }
+
+    #[test]
+    fn uninstall_also_removes_an_old_install_left_behind() {
+        let mut pc = Recording::new().with_app(Some("0.2.0"));
+        pc.old_install = true;
+        assert_eq!(uninstall(&mut pc, &setup("0.2.0", true)), Ok(()));
+        assert_eq!(pc.log, [RemoveApp, RemoveShortcuts, RemoveOldInstall(old_dir()), Unregister, ScheduleFolderRemoval]);
+    }
+
+    #[test]
+    fn uninstall_still_removes_the_entry_when_the_old_install_cannot_be_removed() {
+        let mut pc = Recording::new().with_app(Some("0.2.0"));
+        pc.old_install = true;
+        pc.old_install_removal = Err("Could not remove DXF Converter.exe".into());
+        assert_eq!(uninstall(&mut pc, &setup("0.2.0", true)), Err("Could not remove DXF Converter.exe".into()));
+        assert_eq!(pc.log, [RemoveApp, RemoveShortcuts, RemoveOldInstall(old_dir()), Unregister, ScheduleFolderRemoval]);
+    }
+
+    #[test]
+    fn failed_shortcuts_and_old_install_removal_report_both() {
+        let mut pc = Recording::new().with_old_install("0.1.4");
+        pc.shortcuts = Err("PowerShell failed: blocked".into());
+        pc.old_install_removal = Err("Could not remove DXF Converter.exe".into());
+        assert_eq!(
+            install(&mut pc, &setup("0.2.0", true)),
+            Err("PowerShell failed: blocked\n\nCould not remove DXF Converter.exe".into())
+        );
     }
 }

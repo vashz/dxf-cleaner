@@ -69,7 +69,7 @@ fn summary(out: &Output) -> String {
 fn layer0_puts_every_entity_on_layer_0() {
     let (out, written) = run("layer0", &open_lines(2), &["--layer0"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    let layers: Vec<String> = dxf_converter::read_file(&written).unwrap().entities.into_iter().map(|e| e.layer).collect();
+    let layers: Vec<String> = dxf_cleaner::read_file(&written).unwrap().entities.into_iter().map(|e| e.layer).collect();
     assert_eq!(layers, ["0", "0"], "the source lines are on layer CUT");
 }
 

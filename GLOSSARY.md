@@ -1,6 +1,7 @@
-# DXF Converter
+# DXF Cleaner
 
 Turns polluted DXF exports (e.g. from Adobe Illustrator) into outlines of straight lines and true arcs that cutting and nesting software accept.
+_Avoid_: DXF Converter (its name before 0.2.0)
 
 ## Language
 
@@ -59,7 +60,7 @@ _Avoid_: Filler, patch
 ### Installer
 
 **Setup**:
-The one-file program staff run to put DXF Converter on their own Windows account. It carries exactly one version of the app.
+The one-file program staff run to put DXF Cleaner on their own Windows account. It carries exactly one version of the app.
 _Avoid_: Installer package, MSI
 
 **Install**:
@@ -79,5 +80,5 @@ Running a setup whose version is older than the installed one. Setup asks first,
 _Avoid_: Rollback
 
 **Uninstall**:
-Removing the app, its shortcuts and its "Apps & features" entry from the account. Staff see it as "Remove DXF Converter from this computer?", so *remove* means the same thing.
+Removing the app, its shortcuts and its "Apps & features" entry from the account. Staff see it as "Remove DXF Cleaner from this computer?", so *remove* means the same thing.
 _Avoid_: Delete

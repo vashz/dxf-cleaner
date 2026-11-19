@@ -1,6 +1,6 @@
-//! Command-line version of DXF Converter. The flags are listed once, in `USAGE`.
+//! Command-line version of DXF Cleaner. The flags are listed once, in `USAGE`.
 
-use dxf_converter::*;
+use dxf_cleaner::*;
 use std::path::PathBuf;
 
 const USAGE: &str = "dxf-clean <input.dxf> [-o output.dxf] [--tol 0.05] [--join 0.05] [--no-join] [--lines-arcs] [--origin] [--keep-duplicates] [--layer0]";

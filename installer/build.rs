@@ -16,8 +16,8 @@ fn main() {
     let mut res = winresource::WindowsResource::new();
     res.set_icon("../assets/icon.ico")
         .set_manifest_file("setup.manifest")
-        .set("ProductName", "DXF Converter Setup")
-        .set("FileDescription", "DXF Converter Setup")
+        .set("ProductName", "DXF Cleaner Setup")
+        .set("FileDescription", "DXF Cleaner Setup")
         .set("FileVersion", &version)
         .set("ProductVersion", &version)
         .set_version_info(winresource::VersionInfo::FILEVERSION, packed)
