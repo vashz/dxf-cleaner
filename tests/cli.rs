@@ -128,3 +128,82 @@ fn without_o_the_clean_file_lands_beside_the_input_and_the_input_is_untouched() 
     assert!(dir.join("part_clean.dxf").is_file(), "part_clean.dxf not written");
     assert_eq!(std::fs::read_to_string(&input).unwrap(), dxf, "the input was changed");
 }
+
+/// Asserts `dxf-clean` stopped on an argument mistake: exit 2, nothing on stdout, no file
+/// written, and stderr is exactly `error_line` followed by the usage line.
+fn assert_usage_error(out: &Output, written: &PathBuf, error_line: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "", "stderr: {stderr}");
+    assert!(!written.exists(), "a file was written despite the error");
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 2, "stderr: {stderr:?}");
+    assert_eq!(lines[0], error_line);
+    assert!(lines[1].starts_with("usage: dxf-clean <input.dxf> "), "stderr: {stderr:?}");
+}
+
+#[test]
+fn a_mistyped_flag_is_reported_not_taken_as_the_input() {
+    let (out, written) = run("typo", &open_lines(1), &["--layer-0"]);
+    assert_usage_error(&out, &written, "error: unknown argument '--layer-0'");
+    let (out, written) = run("typo-short", &open_lines(1), &["-x"]);
+    assert_usage_error(&out, &written, "error: unknown argument '-x'");
+}
+
+#[test]
+fn a_second_input_path_is_reported_not_swapped_in() {
+    let (out, written) = run("two-inputs", &open_lines(1), &["other.dxf"]);
+    let input = written.with_file_name("in.dxf");
+    assert_usage_error(&out, &written, &format!("error: more than one input file: '{}' and 'other.dxf'", input.display()));
+}
+
+#[test]
+fn a_tolerance_that_is_not_a_number_is_reported() {
+    let (out, written) = run("tol-abc", &open_lines(1), &["--tol", "abc"]);
+    assert_usage_error(&out, &written, "error: --tol: 'abc' is not a number");
+    let (out, written) = run("tol-nan", &open_lines(1), &["--tol", "nan"]);
+    assert_usage_error(&out, &written, "error: --tol: 'nan' is not a number");
+}
+
+#[test]
+fn a_tolerance_with_no_value_is_reported() {
+    let (out, written) = run("tol-missing", &open_lines(1), &["--tol"]);
+    assert_usage_error(&out, &written, "error: --tol needs a number");
+    let (out, written) = run("tol-then-flag", &open_lines(1), &["--tol", "--layer0"]);
+    assert_usage_error(&out, &written, "error: --tol needs a number");
+}
+
+#[test]
+fn a_tolerance_of_zero_or_less_is_reported() {
+    let (out, written) = run("tol-zero", &open_lines(1), &["--tol", "0"]);
+    assert_usage_error(&out, &written, "error: --tol must be greater than 0, got '0'");
+    let (out, written) = run("tol-negative", &open_lines(1), &["--tol", "-0.05"]);
+    assert_usage_error(&out, &written, "error: --tol must be greater than 0, got '-0.05'");
+}
+
+#[test]
+fn a_join_gap_that_is_missing_or_not_a_number_is_reported() {
+    let (out, written) = run("join-missing", &open_lines(1), &["--join"]);
+    assert_usage_error(&out, &written, "error: --join needs a number");
+    let (out, written) = run("join-abc", &open_lines(1), &["--join", "abc"]);
+    assert_usage_error(&out, &written, "error: --join: 'abc' is not a number");
+    let (out, written) = run("join-inf", &open_lines(1), &["--join", "inf"]);
+    assert_usage_error(&out, &written, "error: --join: 'inf' is not a number");
+}
+
+#[test]
+fn a_negative_join_gap_is_reported_but_zero_is_allowed() {
+    let (out, written) = run("join-negative", &open_lines(1), &["--join", "-1"]);
+    assert_usage_error(&out, &written, "error: --join must be 0 or more, got '-1'");
+    let (out, written) = run("join-zero", &open_lines(1), &["--join", "0"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(written.is_file(), "output file not written");
+}
+
+#[test]
+fn an_output_flag_with_no_file_name_is_reported() {
+    let (out, written) = run("o-missing", &open_lines(1), &["-o"]);
+    assert_usage_error(&out, &written, "error: -o needs a file name");
+    let (out, written) = run("output-then-flag", &open_lines(1), &["--output", "--layer0"]);
+    assert_usage_error(&out, &written, "error: --output needs a file name");
+}
