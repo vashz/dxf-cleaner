@@ -88,3 +88,7 @@ cargo test
 
 `tests/fixtures/illustrator_polluted.dxf` is a real Illustrator export (2 splines + 2 hatches);
 the test checks it becomes two closed 8-segment outlines like `tests/fixtures/manual_fix.dxf`.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
