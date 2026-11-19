@@ -1,7 +1,9 @@
-//! Command-line version: dxf-clean <input.dxf> [-o output.dxf] [--tol 0.05] [--join 0.05] [--lines-arcs] [--origin]
+//! Command-line version of DXF Converter. The flags are listed once, in `USAGE`.
 
 use dxf_converter::*;
 use std::path::PathBuf;
+
+const USAGE: &str = "dxf-clean <input.dxf> [-o output.dxf] [--tol 0.05] [--join 0.05] [--no-join] [--lines-arcs] [--origin] [--keep-duplicates] [--layer0]";
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -14,18 +16,20 @@ fn main() {
             "-o" | "--output" => output = args.next().map(PathBuf::from),
             "--tol" => opt.tolerance = args.next().and_then(|v| v.parse().ok()).unwrap_or(opt.tolerance),
             "--join" => opt.join_gap = args.next().and_then(|v| v.parse().ok()).unwrap_or(opt.join_gap),
+            "--no-join" => opt.join_paths = false,
             "--lines-arcs" => mode = OutputMode::LinesAndArcs,
             "--origin" => opt.move_to_origin = true,
             "--keep-duplicates" => opt.remove_duplicates = false,
+            "--layer0" => opt.single_layer = Some("0".into()),
             "-h" | "--help" => {
-                println!("dxf-clean <input.dxf> [-o output.dxf] [--tol 0.05] [--join 0.05] [--lines-arcs] [--origin] [--keep-duplicates]");
+                println!("{USAGE}");
                 return;
             }
             _ => input = Some(PathBuf::from(a)),
         }
     }
     let Some(input) = input else {
-        eprintln!("usage: dxf-clean <input.dxf> [-o output.dxf]");
+        eprintln!("usage: {USAGE}");
         std::process::exit(2);
     };
     let job = match Job::open(input) {

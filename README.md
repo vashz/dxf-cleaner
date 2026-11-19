@@ -43,8 +43,10 @@ cargo build --release
 Produces `target\release\dxf-converter.exe` (GUI) and `target\release\dxf-clean.exe` (command line):
 
 ```powershell
-dxf-clean input.dxf -o output.dxf --tol 0.05 --join 0.05 [--lines-arcs] [--origin]
+dxf-clean input.dxf [-o output.dxf] [--tol 0.05] [--join 0.05] [--no-join] [--lines-arcs] [--origin] [--keep-duplicates] [--layer0]
 ```
+
+Without `-o` it writes `<name>_clean.dxf` beside the input. The switches match the window's settings: `--no-join` turns off "Join touching paths", `--lines-arcs` exports separate LINE / ARC entities, `--origin` moves the drawing to 0,0, `--keep-duplicates` turns off "Remove duplicate geometry", and `--layer0` puts everything on layer 0. `dxf-clean --help` prints the same list.
 
 ## Packaging for staff
 
