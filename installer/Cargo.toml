@@ -1,0 +1,20 @@
+[package]
+name = "dxf-converter-setup"
+version = "0.1.0"
+edition = "2024"
+description = "Per-user installer for DXF Converter (build it with ../package.ps1)"
+publish = false
+
+# Not part of the main crate: this is built after the app, by package.ps1.
+[workspace]
+
+[dependencies]
+rfd = "0.18.0"
+
+[build-dependencies]
+winresource = "0.1.34"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

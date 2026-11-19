@@ -17,14 +17,15 @@ const C_NODE_AFTER: Color32 = Color32::from_rgb(255, 255, 255);
 const C_OPEN: Color32 = Color32::from_rgb(255, 90, 200);
 
 fn main() -> eframe::Result {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1360.0, 820.0])
-            .with_min_inner_size([900.0, 560.0])
-            .with_title("DXF Converter")
-            .with_drag_and_drop(true),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1360.0, 820.0])
+        .with_min_inner_size([900.0, 560.0])
+        .with_title("DXF Converter")
+        .with_drag_and_drop(true);
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")) {
+        viewport = viewport.with_icon(icon);
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     let start_file = std::env::args().nth(1).map(PathBuf::from);
     eframe::run_native(
         "DXF Converter",
