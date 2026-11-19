@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and package (Windows)
+    # The app, its installer and their resource embedding (rc.exe) are Windows-only.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            installer -> target
+
+      # Same script staff hand-outs are built with: runs all tests (app + installer),
+      # builds the release app and the setup exe, and writes them to dist\.
+      - name: Test and package
+        shell: pwsh
+        run: ./package.ps1
+
+      - name: Upload setup and portable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: dxf-converter-${{ github.sha }}
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
