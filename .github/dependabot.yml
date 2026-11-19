@@ -1,0 +1,32 @@
+# Weekly version updates. Security fixes come separately, as soon as an
+# advisory is published (Dependabot security updates, on in the repo settings).
+#
+# Minor and patch updates are grouped, so each ecosystem gets one PR a week.
+# Major updates still get a PR each.
+version: 2
+updates:
+  # The app and dxf-clean (root Cargo.lock) and the installer, which is its own
+  # Cargo workspace with its own Cargo.lock. One entry with both directories, so
+  # the group spans both lock files.
+  - package-ecosystem: cargo
+    directories:
+      - "/"
+      - "/installer"
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Actions used in .github/workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - minor
+          - patch
