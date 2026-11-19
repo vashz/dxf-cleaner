@@ -242,7 +242,7 @@ fn draw_grid(painter: &egui::Painter, rect: Rect, v: &View) {
 }
 
 fn draw_path(painter: &egui::Painter, rect: Rect, v: &View, path: &CPath, nodes: bool) {
-    for seg in &path.segs {
+    for seg in path.segs() {
         let (color, n) = if seg.is_line() {
             (C_LINE, 1)
         } else {
@@ -253,10 +253,10 @@ fn draw_path(painter: &egui::Painter, rect: Rect, v: &View, path: &CPath, nodes:
         painter.add(egui::Shape::line(pts, Stroke::new(1.6, color)));
     }
     if nodes {
-        for seg in &path.segs {
+        for seg in path.segs() {
             painter.circle_filled(to_screen(v, rect, seg.a), 2.5, C_NODE_AFTER);
         }
-        if !path.closed {
+        if !path.is_closed() {
             painter.circle_stroke(to_screen(v, rect, path.start()), 5.0, Stroke::new(1.5, C_OPEN));
             painter.circle_stroke(to_screen(v, rect, path.end()), 5.0, Stroke::new(1.5, C_OPEN));
         }
@@ -423,7 +423,7 @@ impl eframe::App for App {
                     .changed();
                 ui.label(format!("Join gap ({units})"));
                 changed |= ui
-                    .add(egui::DragValue::new(&mut self.opt.join_tolerance).speed(0.001).range(0.0..=5.0).max_decimals(3))
+                    .add(egui::DragValue::new(&mut self.opt.join_gap).speed(0.001).range(0.0..=5.0).max_decimals(3))
                     .on_hover_text("Open ends closer than this are connected into one continuous path.")
                     .changed();
                 changed |= ui.checkbox(&mut self.opt.join_paths, "Join touching paths").changed();

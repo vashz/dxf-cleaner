@@ -134,7 +134,7 @@ pub fn write_dxf(shapes: &[Shape], mode: OutputMode, insunits: Option<i32>) -> S
                     w.f(10, 0.0);
                     w.f(20, 0.0);
                     w.f(30, 0.0);
-                    w.i(70, if path.closed { 1 } else { 0 });
+                    w.i(70, if path.is_closed() { 1 } else { 0 });
                     let mut vertex = |pt: crate::geom::P, bulge: f64| {
                         w.pair(0, "VERTEX");
                         w.pair(8, &layer);
@@ -145,17 +145,17 @@ pub fn write_dxf(shapes: &[Shape], mode: OutputMode, insunits: Option<i32>) -> S
                             w.f(42, bulge);
                         }
                     };
-                    for seg in &path.segs {
+                    for seg in path.segs() {
                         vertex(seg.a, seg.bulge);
                     }
-                    if !path.closed {
+                    if !path.is_closed() {
                         vertex(path.end(), 0.0);
                     }
                     w.pair(0, "SEQEND");
                     w.pair(8, &layer);
                 }
                 OutputMode::LinesAndArcs => {
-                    for seg in &path.segs {
+                    for seg in path.segs() {
                         match seg.arc() {
                             None => {
                                 w.pair(0, "LINE");

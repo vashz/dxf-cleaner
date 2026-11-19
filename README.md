@@ -22,7 +22,7 @@ breaks into point-to-point moves.
 | Densely tessellated LWPOLYLINE / POLYLINE | collinear points merged into lines, point runs on a circle fitted as arcs |
 | Illustrator circles (4 Bezier quarters) / tessellated circles | one CIRCLE |
 | LINE / ARC / CIRCLE / ELLIPSE / bulged polylines | kept; collinear lines and co-circular arcs merged |
-| Pieces whose ends touch (within *Join gap*) | joined into one continuous (closed) path |
+| Pieces whose ends touch (within *Join gap*) | joined into one continuous (closed) path: the ends meet halfway, or, if that would move the shape more than the *Tolerance*, a short straight bridge fills the gap |
 | Duplicate geometry | removed |
 | HATCH fills, TEXT, dimensions, points… | ignored (listed under "Ignored") |
 | Blocks (INSERT) | exploded with their transform |
