@@ -1,0 +1,21 @@
+# Weekly version updates. Security fixes come separately, as soon as an
+# advisory is published (Dependabot security updates, on in the repo settings).
+version: 2
+updates:
+  # The app and dxf-clean (Cargo.lock at the root).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  # The installer is its own Cargo workspace with its own Cargo.lock.
+  - package-ecosystem: cargo
+    directory: "/installer"
+    schedule:
+      interval: weekly
+
+  # Actions used in .github/workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
