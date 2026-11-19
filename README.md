@@ -70,7 +70,8 @@ Runs the tests, builds everything and writes to `dist\`:
   before downgrading (and refuses in quiet mode). Setup and uninstall refuse to run while the app is open.
   `/quiet` installs silently; `uninstall.exe /uninstall [/quiet]` (in the install folder)
   removes it.
-- `nhl-dxf-cleaner-<version>-portable.zip`: unzip and run, nothing installed.
+- `nhl-dxf-cleaner-<version>-portable.zip`: unzip and run, nothing installed. Holds both
+  exes, a short `READ ME.txt` and the licence as `LICENSE.txt`.
 
 The executables are not code-signed, so Windows SmartScreen may show "Windows protected
 your PC" the first time: click **More info → Run anyway**.

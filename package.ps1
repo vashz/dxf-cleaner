@@ -36,6 +36,8 @@ Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $stage | Out-Null
 Copy-Item $app (Join-Path $stage 'DXF Cleaner.exe')
 Copy-Item $cli (Join-Path $stage 'dxf-clean.exe')
+# .txt so it opens with a double-click on Windows.
+Copy-Item LICENSE (Join-Path $stage 'LICENSE.txt')
 @"
 DXF Cleaner $version
 ======================
@@ -54,6 +56,8 @@ nhl-dxf-cleaner-setup-$version.exe.
 
 If Windows shows "Windows protected your PC", click "More info" and then
 "Run anyway" (the program is not code-signed).
+
+DXF Cleaner is free software under the MIT License: see LICENSE.txt.
 "@ | Set-Content -Encoding UTF8 (Join-Path $stage 'READ ME.txt')
 $zip = Join-Path $dist "nhl-dxf-cleaner-$version-portable.zip"
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
