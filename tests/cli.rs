@@ -66,6 +66,27 @@ fn summary(out: &Output) -> String {
 }
 
 #[test]
+fn paper_space_and_hidden_layers_are_left_out_and_listed_as_ignored() {
+    // a LINE on CUT, a title-block LINE in paper space and a LINE on a frozen layer
+    let dxf = "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n2\n\
+0\nLAYER\n2\nCUT\n70\n0\n62\n7\n0\nLAYER\n2\nOLD\n70\n1\n62\n7\n0\nENDTAB\n0\nENDSEC\n\
+0\nSECTION\n2\nENTITIES\n\
+0\nLINE\n8\nCUT\n10\n0\n20\n0\n11\n100\n21\n0\n\
+0\nLINE\n8\nTITLE\n67\n1\n10\n0\n20\n50\n11\n100\n21\n50\n\
+0\nLINE\n8\nold\n10\n0\n20\n100\n11\n100\n21\n100\n\
+0\nENDSEC\n0\nEOF\n";
+    let (out, written) = run("hidden", dxf, &[]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(written.is_file(), "output file not written");
+    assert!(summary(&out).starts_with("output: 0 closed + 1 open paths, 1 lines"), "{}", summary(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let ignored = stdout.lines().find(|l| l.starts_with("ignored:")).unwrap_or_default();
+    assert_eq!(ignored, r#"ignored: {"LINE (layer frozen)": 1, "LINE (paper space)": 1}"#);
+    let input = stdout.lines().find(|l| l.starts_with("input :")).unwrap_or_default();
+    assert_eq!(input, r#"input : {"LINE": 1}"#);
+}
+
+#[test]
 fn layer0_puts_every_entity_on_layer_0() {
     let (out, written) = run("layer0", &open_lines(2), &["--layer0"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
