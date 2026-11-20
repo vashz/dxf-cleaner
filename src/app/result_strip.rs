@@ -21,7 +21,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 };
                 let s = &res.stats;
                 if app.result_stale {
-                    chip(ui, Icon::Wand, "Settings changed. Clean Up again.", Color32::from_rgb(0x1B, 0x2C, 0x40), ACCENT);
+                    chip(ui, Icon::Wand, super::STALE_TEXT, Color32::from_rgb(0x1B, 0x2C, 0x40), ACCENT);
                 }
                 match s.open_path_heading() {
                     Some(h) => chip(ui, Icon::Warning, &h, OPEN_BG, OPEN_TEXT),

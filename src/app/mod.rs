@@ -98,9 +98,26 @@ impl App {
         }
     }
 
+    /// A Clean Up setting changed: the result no longer matches the settings.
+    fn settings_changed(&mut self) {
+        if self.result.is_some() {
+            self.result_stale = true;
+        }
+    }
+
+    /// The result Export DXF may write, or why there is none. The toolbar button and
+    /// the export path both ask here.
+    fn exportable(&self) -> Result<&CleanResult, NotExportable> {
+        match &self.result {
+            None => Err(NotExportable::NoResult),
+            Some(_) if self.result_stale => Err(NotExportable::Stale),
+            Some(res) => Ok(res),
+        }
+    }
+
     /// Export DXF: first warns about open paths, if there are any.
     fn export(&mut self) {
-        let Some(res) = &self.result else { return };
+        let Ok(res) = self.exportable() else { return };
         if res.stats.open_paths > 0 {
             self.export_warning = Some(ExportWarning::new());
         } else {
@@ -108,8 +125,18 @@ impl App {
         }
     }
 
+    /// The DXF that Export DXF writes, in the chosen export format.
+    fn export_text(&self) -> Result<String, NotExportable> {
+        let res = self.exportable()?;
+        let job = self.job.as_ref().ok_or(NotExportable::NoResult)?;
+        Ok(job.dxf_text(res, self.mode))
+    }
+
     fn save_dialog(&mut self) {
-        let (Some(job), Some(res)) = (&self.job, &self.result) else { return };
+        let Some(job) = &self.job else { return };
+        if self.exportable().is_err() {
+            return;
+        }
         let default = job.default_output();
         let name = default.file_name().unwrap_or_default().to_string_lossy();
         let mut dlg = rfd::FileDialog::new().add_filter("DXF drawing", &["dxf"]).set_file_name(name);
@@ -117,7 +144,7 @@ impl App {
             dlg = dlg.set_directory(d);
         }
         if let Some(out) = dlg.save_file() {
-            let text = job.dxf_text(res, self.mode);
+            let Ok(text) = self.export_text() else { return };
             self.notice = Some(match std::fs::write(&out, text) {
                 Ok(()) => Notice::info(format!("Exported {}", out.file_name().unwrap_or_default().to_string_lossy())),
                 Err(e) => Notice::error(format!("Could not write {}: {e}", out.display())),
@@ -172,6 +199,28 @@ impl App {
     }
 }
 
+/// Why Export DXF cannot write the result.
+#[derive(Debug, PartialEq)]
+enum NotExportable {
+    /// Clean Up has not run on the open file.
+    NoResult,
+    /// A Clean Up setting changed after Clean Up ran.
+    Stale,
+}
+
+impl NotExportable {
+    /// What hovering the disabled Export DXF button says.
+    fn hover_text(&self) -> &'static str {
+        match self {
+            NotExportable::NoResult => "Click Clean Up first.",
+            NotExportable::Stale => STALE_TEXT,
+        }
+    }
+}
+
+/// Shown while the result no longer matches the Clean Up settings.
+const STALE_TEXT: &str = "Settings changed. Clean Up again.";
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let dropped: Vec<PathBuf> =
@@ -194,5 +243,73 @@ impl eframe::App for App {
         if self.export_warning.is_some() {
             export_dialog::show(self, ui.ctx());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn cleaned() -> App {
+        let mut app = App::new();
+        app.load(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/illustrator_polluted.dxf"));
+        app.run_clean();
+        app
+    }
+
+    #[test]
+    fn a_changed_setting_blocks_export_until_clean_up_runs_again() {
+        let mut app = cleaned();
+        assert!(app.exportable().is_ok());
+        app.settings_changed();
+        assert_eq!(app.exportable().err(), Some(NotExportable::Stale));
+        app.run_clean();
+        assert!(app.exportable().is_ok());
+    }
+
+    #[test]
+    fn the_export_path_refuses_a_stale_result() {
+        let mut app = cleaned();
+        app.settings_changed();
+        assert_eq!(app.export_text().err(), Some(NotExportable::Stale));
+    }
+
+    #[test]
+    fn after_clean_up_runs_again_the_export_matches_the_current_settings() {
+        let mut app = cleaned();
+        let old = app.export_text().unwrap();
+        app.opt.move_to_origin = !app.opt.move_to_origin;
+        app.settings_changed();
+        app.run_clean();
+        let fresh = Job::open(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/illustrator_polluted.dxf")).unwrap();
+        let opt = Options { move_to_origin: !Options::default().move_to_origin, ..Options::default() };
+        let expected = fresh.dxf_text(&fresh.clean(&opt), OutputMode::Polylines);
+        assert_eq!(app.export_text().unwrap(), expected);
+        assert_ne!(old, expected, "moving to the origin must change the sample for this test to mean anything");
+    }
+
+    #[test]
+    fn switching_the_export_format_leaves_export_enabled() {
+        let mut app = cleaned();
+        app.mode = OutputMode::LinesAndArcs;
+        assert!(app.exportable().is_ok());
+        app.mode = OutputMode::Polylines;
+        assert!(app.exportable().is_ok());
+    }
+
+    #[test]
+    fn opening_a_file_blocks_export_until_clean_up_runs() {
+        let mut app = cleaned();
+        app.settings_changed();
+        app.load(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/manual_fix.dxf"));
+        assert_eq!(app.exportable().err(), Some(NotExportable::NoResult));
+        app.run_clean();
+        assert!(app.exportable().is_ok());
+    }
+
+    #[test]
+    fn a_stale_result_says_to_clean_up_again() {
+        assert_eq!(NotExportable::Stale.hover_text(), "Settings changed. Clean Up again.");
     }
 }

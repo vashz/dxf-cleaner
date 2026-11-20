@@ -24,7 +24,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if clean.inner.clicked() {
                 app.run_clean();
             }
-            let export = ui.add_enabled_ui(app.result.is_some(), |ui| widgets::button(ui, Some(Icon::Download), "Export DXF", Kind::Secondary, TOOLBAR_H));
+            let blocked = app.exportable().err();
+            let export = ui.add_enabled_ui(blocked.is_none(), |ui| widgets::button(ui, Some(Icon::Download), "Export DXF", Kind::Secondary, TOOLBAR_H));
+            if let Some(why) = blocked {
+                export.inner.clone().on_disabled_hover_text(why.hover_text());
+            }
             if export.inner.clicked() {
                 app.export();
             }
