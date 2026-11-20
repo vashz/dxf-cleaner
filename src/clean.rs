@@ -10,9 +10,11 @@ use std::f64::consts::PI;
 
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// Maximum allowed deviation from the original geometry (drawing units).
+    /// The Tolerance: maximum allowed deviation from the original geometry, in mm whatever
+    /// the drawing units (Clean Up converts it from `$INSUNITS`).
     pub tolerance: f64,
-    /// Endpoints closer than this are joined into one continuous path.
+    /// The Join gap, in mm like the Tolerance: endpoints closer than this are joined into
+    /// one continuous path.
     pub join_gap: f64,
     pub remove_duplicates: bool,
     pub join_paths: bool,
@@ -296,7 +298,7 @@ pub struct Stats {
     pub closed_paths: usize,
     pub open_paths: usize,
     pub duplicates_removed: usize,
-    /// Max measured deviation from the source geometry.
+    /// Max measured Deviation from the source geometry, in mm.
     pub max_deviation: f64,
 }
 
@@ -1038,8 +1040,11 @@ fn dedupe(shapes: Vec<Shape>, tol: f64, removed: &mut usize) -> Vec<Shape> {
 // ---------------------------------------------------------------- public API
 
 pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
-    let tol = opt.tolerance.max(1e-6);
-    let lim = Limits { tol, join_gap: opt.join_gap.max(0.0) };
+    // The settings are mm; the geometry is in drawing units. The minimum is applied in mm,
+    // before converting, so a drawing in km keeps its 0.05 mm Tolerance.
+    let units = dwg.units();
+    let tol = units.from_mm(opt.tolerance.max(1e-6));
+    let lim = Limits { tol, join_gap: units.from_mm(opt.join_gap.max(0.0)) };
     let mut stats = Stats::default();
     let layer_of = |e: &Entity| opt.single_layer.clone().unwrap_or_else(|| e.layer.clone());
 
@@ -1097,7 +1102,7 @@ pub fn clean(dwg: &Drawing, opt: &Options) -> CleanResult {
         if let Shape::Path(path) = s {
             for f in &path.segs {
                 for q in &f.original {
-                    stats.max_deviation = stats.max_deviation.max(f.seg.dist_to(*q));
+                    stats.max_deviation = stats.max_deviation.max(units.to_mm(f.seg.dist_to(*q)));
                 }
             }
         }

@@ -4,6 +4,7 @@ use super::App;
 use super::icons::Icon;
 use super::theme::*;
 use super::widgets::{self, Kind};
+use dxf_cleaner::DrawingUnits;
 use eframe::egui::{self, Align, Color32, CornerRadius, Layout, Margin, RichText, Sense, Stroke, vec2};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -41,7 +42,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.fit_to = None;
                 }
                 if let Some(job) = &app.job {
-                    file_chip(ui, &job.file_name(), app.units());
+                    file_chip(ui, &job.file_name(), job.drawing().units());
                 }
             });
         });
@@ -57,15 +58,19 @@ fn nodes_toggle(ui: &mut egui::Ui, show: &mut bool) {
         .show(ui, |ui| ui.checkbox(show, "Nodes").on_hover_text("Show the points each path is made of"));
 }
 
-/// The loaded file's name and units, with a dot that says it is open.
-fn file_chip(ui: &mut egui::Ui, name: &str, units: &str) {
+/// The loaded file's name and units (e.g. "drawn in inches"), with a dot that says it is
+/// open. A drawing with no units Clean Up knows says it was treated as mm, as a warning.
+fn file_chip(ui: &mut egui::Ui, name: &str, units: DrawingUnits) {
     egui::Frame::new().fill(CONTROL).corner_radius(CornerRadius::same(16)).inner_margin(Margin::symmetric(12, 6)).show(ui, |ui| {
         // The toolbar's right side runs right to left, and so does this row (a nested
         // left-to-right layout would take the whole free width), so the pieces are added
         // last first: units, name, dot.
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            ui.label(RichText::new(units).color(MUTED));
+            match units.note() {
+                Some(note) => ui.label(RichText::new(units.drawn_in()).color(OPEN_TEXT)).on_hover_text(note),
+                None => ui.label(RichText::new(units.drawn_in()).color(MUTED)),
+            };
             // Shortened by hand: a truncating label would also take the whole free width.
             const MAX: usize = 40;
             let shown = if name.chars().count() > MAX { format!("{}…", name.chars().take(MAX - 1).collect::<String>()) } else { name.to_string() };

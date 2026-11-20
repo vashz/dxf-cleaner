@@ -7,8 +7,8 @@ use dxf_cleaner::{Job, OutputMode};
 use eframe::egui::{self, Align, Color32, CornerRadius, DragValue, Layout, Margin, RichText, Stroke, TextStyle};
 use std::ops::RangeInclusive;
 
-const TOLERANCE_HELP: &str = "The furthest Clean Up may move any part of the original geometry.";
-const JOIN_GAP_HELP: &str = "Path ends closer than this are joined into one continuous path.";
+const TOLERANCE_HELP: &str = "The furthest Clean Up may move any part of the original geometry, in mm whatever units the drawing is in.";
+const JOIN_GAP_HELP: &str = "Path ends closer than this are joined into one continuous path. In mm, like the Tolerance.";
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     egui::Panel::left("settings")
@@ -29,7 +29,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn sections(app: &mut App, ui: &mut egui::Ui) {
-    let units = app.units();
+    // Always mm: Clean Up converts them to the drawing's units (ADR 0001).
+    let units = "mm";
     widgets::section_heading(ui, "Clean Up settings");
     ui.add_space(2.0);
     let mut changed = false;
