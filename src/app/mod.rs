@@ -71,6 +71,7 @@ impl App {
                 self.before = job.before();
                 self.job = Some(job);
                 self.result = None;
+                self.export_warning = None;
                 self.result_stale = false;
                 self.view = None;
                 self.fit_to = None;
@@ -98,9 +99,13 @@ impl App {
         }
     }
 
+    fn export_result(&self) -> Option<&CleanResult> {
+        self.result.as_ref().filter(|_| !self.result_stale)
+    }
+
     /// Export DXF: first warns about open paths, if there are any.
     fn export(&mut self) {
-        let Some(res) = &self.result else { return };
+        let Some(res) = self.export_result() else { return };
         if res.stats.open_paths > 0 {
             self.export_warning = Some(ExportWarning::new());
         } else {
@@ -109,7 +114,7 @@ impl App {
     }
 
     fn save_dialog(&mut self) {
-        let (Some(job), Some(res)) = (&self.job, &self.result) else { return };
+        let (Some(job), Some(res)) = (&self.job, self.export_result()) else { return };
         let default = job.default_output();
         let name = default.file_name().unwrap_or_default().to_string_lossy();
         let mut dlg = rfd::FileDialog::new().add_filter("DXF drawing", &["dxf"]).set_file_name(name);
@@ -194,5 +199,29 @@ impl eframe::App for App {
         if self.export_warning.is_some() {
             export_dialog::show(self, ui.ctx());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_requires_a_result_for_the_current_cleanup_settings() {
+        let mut app = App::new();
+        let drawing = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/illustrator_polluted.dxf");
+        app.load(drawing);
+        assert!(app.export_result().is_none());
+
+        app.run_clean();
+        assert!(app.export_result().is_some());
+
+        app.opt.move_to_origin = true;
+        app.result_stale = true;
+        assert!(app.result.is_some());
+        assert!(app.export_result().is_none());
+
+        app.run_clean();
+        assert!(app.export_result().is_some());
     }
 }

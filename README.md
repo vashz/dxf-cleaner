@@ -16,7 +16,8 @@ with `git remote set-url origin https://github.com/vashz/dxf-cleaner.git`).
 4. **Export DXF** (saves `<name>_clean.dxf` next to the original by default). If the result
    still has open paths, it first warns that nesting software will reject them unless they
    are marking lines, and asks whether to export anyway. `dxf-clean` prints the same warning
-   to stderr and still writes the file.
+   to stderr and still writes the file. If you change a Clean Up setting, run **Clean Up**
+   again to re-enable **Export DXF**.
 
 ## What Clean Up does
 

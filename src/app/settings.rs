@@ -43,6 +43,7 @@ fn sections(app: &mut App, ui: &mut egui::Ui) {
     changed |= ui.checkbox(&mut app.one_layer, "Put everything on layer 0").changed();
     if changed && app.result.is_some() {
         app.result_stale = true;
+        app.export_warning = None;
     }
 
     ui.add_space(18.0);
