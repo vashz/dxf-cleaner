@@ -29,6 +29,7 @@ with `git remote set-url origin https://github.com/vashz/dxf-cleaner.git`).
 | Pieces whose ends touch (within *Join gap*) | joined into one continuous (closed) path: the ends meet halfway, or, if that would move the shape more than the *Tolerance*, a short straight bridge fills the gap |
 | Duplicate geometry | removed |
 | HATCH fills, TEXT, dimensions, points… | ignored (listed under "Ignored") |
+| Paper space (title blocks, borders), invisible entities, layers that are off or frozen | left out of the cut (listed under "Ignored", e.g. `LINE (paper space)`, `CIRCLE (layer off)`) |
 | Blocks (INSERT) | exploded with their transform |
 
 Every result is checked against samples of the original geometry: no point moves more than

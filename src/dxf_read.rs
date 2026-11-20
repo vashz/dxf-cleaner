@@ -1,5 +1,7 @@
 //! Minimal, tolerant ASCII DXF reader. Extracts 2D cutting geometry
 //! (LINE, ARC, CIRCLE, ELLIPSE, LWPOLYLINE, POLYLINE, SPLINE, INSERT) in world coordinates.
+//! Only geometry drawn in model space is read: paper-space and invisible entities, and
+//! entities on layers that are off or frozen (from the LAYER table), are left out.
 
 use crate::geom::{bulge_is_straight, p, Affine, P};
 use crate::spans::{polyline_spans, Span};
@@ -30,7 +32,9 @@ pub struct Entity {
 #[derive(Clone, Debug, Default)]
 pub struct Drawing {
     pub entities: Vec<Entity>,
-    /// Entity types that were ignored (not cuttable), with counts.
+    /// Entities that were ignored, with counts: types that are not cuttable (e.g. "HATCH"),
+    /// and geometry that is not drawn in model space, with the reason (e.g. "LINE (paper space)",
+    /// "CIRCLE (layer off)", "INSERT (layer frozen)", "ARC (invisible)").
     pub skipped: BTreeMap<String, usize>,
     /// Count of read geometry entities by type.
     pub counts: BTreeMap<String, usize>,
@@ -163,6 +167,7 @@ pub fn read_bytes(bytes: &[u8]) -> Result<Drawing, String> {
 
     let mut dwg = Drawing::default();
     let mut blocks: HashMap<String, Block> = HashMap::new();
+    let mut hidden_layers: HashMap<String, &'static str> = HashMap::new();
     let mut entity_raws: Vec<Raw> = Vec::new();
 
     let mut i = 0;
@@ -179,6 +184,7 @@ pub fn read_bytes(bytes: &[u8]) -> Result<Drawing, String> {
                 "HEADER" => read_header(body, &mut dwg),
                 "ENTITIES" => entity_raws.extend(split_entities(body)),
                 "BLOCKS" => read_blocks(body, &mut blocks),
+                "TABLES" => read_layers(body, &mut hidden_layers),
                 _ => {}
             }
             i = end + 1;
@@ -187,7 +193,7 @@ pub fn read_bytes(bytes: &[u8]) -> Result<Drawing, String> {
         }
     }
 
-    let mut ctx = Ctx { blocks: &blocks, dwg: &mut dwg };
+    let mut ctx = Ctx { blocks: &blocks, hidden_layers: &hidden_layers, dwg: &mut dwg };
     for r in &entity_raws {
         ctx.convert(r, &Affine::identity(), 0);
     }
@@ -208,6 +214,22 @@ fn read_header(body: &[(i32, String)], dwg: &mut Drawing) {
             }
         }
         k += 1;
+    }
+}
+
+/// Collect the layers that are not drawn, keyed by upper-case name, with the reason:
+/// frozen (bit 1 of group 70) or off (negative colour, group 62).
+fn read_layers(body: &[(i32, String)], hidden: &mut HashMap<String, &'static str>) {
+    for r in split_entities(body).into_iter().filter(|r| r.kind == "LAYER") {
+        let name = r.get(2).unwrap_or("").trim().to_uppercase();
+        let why = if r.i(70, 0) & 1 != 0 {
+            "layer frozen"
+        } else if r.i(62, 7) < 0 {
+            "layer off"
+        } else {
+            continue;
+        };
+        hidden.insert(name, why);
     }
 }
 
@@ -260,6 +282,8 @@ fn ocs_affine(n: [f64; 3], elevation: f64) -> Affine {
 
 struct Ctx<'a> {
     blocks: &'a HashMap<String, Block>,
+    /// Layers that are off or frozen (upper-case names), with the reason.
+    hidden_layers: &'a HashMap<String, &'static str>,
     dwg: &'a mut Drawing,
 }
 
@@ -275,7 +299,31 @@ impl Ctx<'_> {
         }
     }
 
+    /// Why `r` is left out of the cut although it is geometry (or an INSERT of geometry),
+    /// or `None` if it is drawn.
+    fn hidden(&self, r: &Raw) -> Option<&'static str> {
+        if !matches!(r.kind.as_str(), "LINE" | "ARC" | "CIRCLE" | "ELLIPSE" | "LWPOLYLINE" | "POLYLINE" | "SPLINE" | "INSERT") {
+            return None;
+        }
+        if r.i(67, 0) == 1 {
+            return Some("paper space");
+        }
+        if r.i(60, 0) == 1 {
+            return Some("invisible");
+        }
+        // An INSERT on an off layer still draws the block entities on their own layers;
+        // those on layer 0 inherit the off layer and are left out one by one.
+        self.hidden_layers
+            .get(&r.layer().to_uppercase())
+            .copied()
+            .filter(|why| !(r.kind == "INSERT" && *why == "layer off"))
+    }
+
     fn convert(&mut self, r: &Raw, xf: &Affine, depth: usize) {
+        if let Some(why) = self.hidden(r) {
+            self.skip(&format!("{} ({why})", r.kind));
+            return;
+        }
         let layer = r.layer();
         match r.kind.as_str() {
             "LINE" => {
@@ -666,6 +714,112 @@ B
         let Geom::Ellipse { t0, t1, .. } = *only(&dxf("", &el(5.0, 1.0))) else { panic!() };
         assert_eq!(t0, 5.0);
         assert!((t1 - (1.0 + 2.0 * PI)).abs() < 1e-12);
+    }
+
+    /// A LINE from (0, `y`) to (100, `y`) on `layer`, with `extra` group pairs.
+    fn line(layer: &str, y: f64, extra: &str) -> String {
+        format!("0\nLINE\n8\n{layer}\n{extra}10\n0\n20\n{y}\n11\n100\n21\n{y}\n")
+    }
+
+    fn layers(d: &Drawing) -> Vec<&str> {
+        d.entities.iter().map(|e| e.layer.as_str()).collect()
+    }
+
+    #[test]
+    fn paper_space_line_is_left_out_and_reported() {
+        let d = dxf("", &(line("CUT", 0.0, "") + &line("TITLE", 50.0, "67\n1\n")));
+        assert_eq!(layers(&d), ["CUT"]);
+        assert_eq!(d.skipped.get("LINE (paper space)"), Some(&1), "{:?}", d.skipped);
+        assert_eq!(d.counts.get("LINE"), Some(&1), "only read geometry is counted");
+    }
+
+    #[test]
+    fn invisible_line_is_left_out_and_reported() {
+        let d = dxf("", &(line("CUT", 0.0, "60\n1\n") + &line("CUT", 50.0, "60\n0\n")));
+        assert_eq!(d.entities.len(), 1, "{:?}", d.entities);
+        assert_eq!(d.skipped.get("LINE (invisible)"), Some(&1), "{:?}", d.skipped);
+        assert_eq!(d.counts.get("LINE"), Some(&1));
+    }
+
+    /// A LAYER table entry: `name` with flags `70` and colour `62` (negative = off).
+    fn layer_entry(name: &str, flags: i32, colour: i32) -> String {
+        format!("0\nLAYER\n2\n{name}\n70\n{flags}\n62\n{colour}\n6\nCONTINUOUS\n")
+    }
+
+    /// Like `dxf`, with a TABLES section holding a LAYER table of `layer_entries`.
+    fn dxf_with_layers(layer_entries: &str, blocks: &str, entities: &str) -> Drawing {
+        let tables = format!("0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n3\n{layer_entries}0\nENDTAB\n0\nENDSEC\n");
+        let text = format!(
+            "{tables}0\nSECTION\n2\nBLOCKS\n{blocks}0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+        );
+        read_bytes(text.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn entities_on_off_or_frozen_layers_are_left_out_whatever_the_case_of_the_name() {
+        let table = layer_entry("CUT", 0, 7) + &layer_entry("Hidden", 0, -7) + &layer_entry("FROZEN", 1, 7);
+        let circle = "0\nCIRCLE\n8\nhidden\n10\n0\n20\n0\n40\n5\n";
+        let ents = line("cut", 0.0, "") + &line("HIDDEN", 50.0, "") + circle + &line("Frozen", 100.0, "");
+        let d = dxf_with_layers(&table, "", &ents);
+        assert_eq!(layers(&d), ["cut"]);
+        assert_eq!(d.skipped.get("LINE (layer off)"), Some(&1), "{:?}", d.skipped);
+        assert_eq!(d.skipped.get("CIRCLE (layer off)"), Some(&1), "{:?}", d.skipped);
+        assert_eq!(d.skipped.get("LINE (layer frozen)"), Some(&1), "{:?}", d.skipped);
+        assert_eq!(d.counts.get("LINE"), Some(&1));
+        assert_eq!(d.counts.get("CIRCLE"), None);
+    }
+
+    #[test]
+    fn insert_on_a_frozen_layer_leaves_out_its_whole_block() {
+        let table = layer_entry("CUT", 0, 7) + &layer_entry("ICE", 1, 7);
+        let b = block("B", &(line("0", 0.0, "") + &line("CUT", 50.0, "")));
+        let d = dxf_with_layers(&table, &b, "0\nINSERT\n8\nice\n2\nB\n10\n0\n20\n0\n");
+        assert!(d.entities.is_empty(), "{:?}", d.entities);
+        assert_eq!(d.skipped.get("INSERT (layer frozen)"), Some(&1), "{:?}", d.skipped);
+        assert!(d.counts.is_empty(), "{:?}", d.counts);
+    }
+
+    #[test]
+    fn insert_on_an_off_layer_leaves_out_only_the_block_entities_that_inherit_its_layer() {
+        let table = layer_entry("CUT", 0, 7) + &layer_entry("DARK", 0, -1);
+        let b = block("B", &(line("0", 0.0, "") + &line("CUT", 50.0, "")));
+        let d = dxf_with_layers(&table, &b, "0\nINSERT\n8\nDark\n2\nB\n10\n0\n20\n0\n");
+        assert_eq!(layers(&d), ["CUT"]);
+        assert_eq!(d.skipped.get("LINE (layer off)"), Some(&1), "{:?}", d.skipped);
+        assert_eq!(d.skipped.len(), 1, "{:?}", d.skipped);
+    }
+
+    #[test]
+    fn block_entity_on_an_off_layer_is_left_out_of_a_visible_insert() {
+        let table = layer_entry("CUT", 0, 7) + &layer_entry("CONSTRUCTION", 0, -3);
+        let b = block("B", &(line("0", 0.0, "") + &line("construction", 50.0, "") + &line("0", 100.0, "60\n1\n")));
+        let d = dxf_with_layers(&table, &b, "0\nINSERT\n8\nCUT\n2\nB\n10\n0\n20\n0\n");
+        assert_eq!(layers(&d), ["CUT"]);
+        assert_eq!(d.skipped.get("LINE (layer off)"), Some(&1), "{:?}", d.skipped);
+        assert_eq!(d.skipped.get("LINE (invisible)"), Some(&1), "{:?}", d.skipped);
+    }
+
+    #[test]
+    fn paper_space_insert_leaves_out_its_whole_block() {
+        let b = block("TITLEBLOCK", &(line("0", 0.0, "") + &line("CUT", 50.0, "")));
+        let d = dxf(&b, &(line("CUT", 0.0, "") + "0\nINSERT\n67\n1\n8\n0\n2\nTITLEBLOCK\n10\n0\n20\n0\n"));
+        assert_eq!(d.entities.len(), 1, "{:?}", d.entities);
+        assert_eq!(d.skipped.get("INSERT (paper space)"), Some(&1), "{:?}", d.skipped);
+        assert_eq!(d.counts.get("LINE"), Some(&1));
+    }
+
+    #[test]
+    fn without_a_layer_table_every_layer_is_drawn() {
+        let ents = line("CUT", 0.0, "") + &line("ANY", 50.0, "");
+        let ltype_only = "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n1\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n0\nENDTAB\n0\nENDSEC\n";
+        let with_other_tables = format!("{ltype_only}0\nSECTION\n2\nENTITIES\n{ents}0\nENDSEC\n0\nEOF\n");
+        for d in [dxf("", &ents), read_bytes(with_other_tables.as_bytes()).unwrap()] {
+            assert_eq!(layers(&d), ["CUT", "ANY"]);
+            assert!(d.skipped.is_empty(), "{:?}", d.skipped);
+        }
+        // a layer missing from the table is drawn too
+        let d = dxf_with_layers(&layer_entry("CUT", 0, 7), "", &ents);
+        assert_eq!(layers(&d), ["CUT", "ANY"]);
     }
 
     #[test]
