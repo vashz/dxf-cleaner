@@ -3,6 +3,7 @@
 
 use crate::geom::{bulge_is_straight, p, Affine, P};
 use crate::spans::{polyline_spans, Span};
+use crate::units::DrawingUnits;
 use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::PI;
 
@@ -34,8 +35,16 @@ pub struct Drawing {
     pub skipped: BTreeMap<String, usize>,
     /// Count of read geometry entities by type.
     pub counts: BTreeMap<String, usize>,
+    /// `$INSUNITS` as read; see [`Drawing::units`].
     pub insunits: Option<i32>,
     pub version: Option<String>,
+}
+
+impl Drawing {
+    /// The units the drawing is drawn in, from its `$INSUNITS`.
+    pub fn units(&self) -> DrawingUnits {
+        DrawingUnits::from_insunits(self.insunits)
+    }
 }
 
 #[derive(Clone, Debug)]

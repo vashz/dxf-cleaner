@@ -219,3 +219,36 @@ fn an_output_flag_with_no_file_name_is_reported() {
     let (out, written) = run("output-then-flag", &open_lines(1), &["--output", "--layer0"]);
     assert_usage_error(&out, &written, "error: --output needs a file name");
 }
+
+/// Two concentric circles of radius 0.25 and 0.28, with `header` before the entities.
+fn concentric_circles(header: &str) -> String {
+    format!("{header}0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n8\nCUT\n10\n0\n20\n0\n40\n0.25\n0\nCIRCLE\n8\nCUT\n10\n0\n20\n0\n40\n0.28\n0\nENDSEC\n0\nEOF\n")
+}
+
+const INCH_HEADER: &str = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n";
+
+#[test]
+fn the_tolerance_is_mm_in_an_inch_drawing() {
+    // 0.03 in apart: at a 0.05 mm Tolerance these are two shapes, not a duplicate
+    let (out, written) = run("inch", &concentric_circles(INCH_HEADER), &[]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(summary(&out).contains("2 circles, 0 duplicates removed"), "{}", summary(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "", "an inch drawing names its units");
+    assert_eq!(dxf_cleaner::read_file(&written).unwrap().insunits, Some(1), "the cleaned file stays in inches");
+}
+
+#[test]
+fn a_drawing_with_no_units_warns_it_was_treated_as_mm_but_still_exports() {
+    let (out, written) = run("no-units", &concentric_circles(""), &[]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(written.is_file(), "output file not written");
+    assert!(stderr.lines().any(|l| l == "warning: no units in drawing: treated as mm"), "stderr: {stderr:?}");
+}
+
+#[test]
+fn the_usage_says_the_tolerance_and_join_gap_are_mm() {
+    let out = Command::new(env!("CARGO_BIN_EXE_dxf-clean")).arg("--help").output().unwrap();
+    let usage = String::from_utf8_lossy(&out.stdout);
+    assert!(usage.contains("[--tol <mm, default 0.05>]") && usage.contains("[--join <mm, default 0.05>]"), "{usage}");
+}

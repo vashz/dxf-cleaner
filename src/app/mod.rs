@@ -145,17 +145,6 @@ impl App {
         Some(bb)
     }
 
-    fn units(&self) -> &'static str {
-        match self.job.as_ref().and_then(|j| j.drawing().insunits) {
-            Some(1) => "in",
-            Some(2) => "ft",
-            Some(4) => "mm",
-            Some(5) => "cm",
-            Some(6) => "m",
-            _ => "units",
-        }
-    }
-
     /// Both views side by side, with the result strip under them.
     fn workbench(&mut self, ui: &mut egui::Ui) {
         let full = ui.available_rect_before_wrap();

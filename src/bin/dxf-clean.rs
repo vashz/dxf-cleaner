@@ -3,7 +3,7 @@
 use dxf_cleaner::*;
 use std::path::PathBuf;
 
-const USAGE: &str = "dxf-clean <input.dxf> [-o output.dxf] [--tol 0.05] [--join 0.05] [--no-join] [--lines-arcs] [--origin] [--keep-duplicates] [--layer0]";
+const USAGE: &str = "dxf-clean <input.dxf> [-o output.dxf] [--tol <mm, default 0.05>] [--join <mm, default 0.05>] [--no-join] [--lines-arcs] [--origin] [--keep-duplicates] [--layer0]";
 
 /// What the command line asks for.
 struct Cli {
@@ -99,11 +99,16 @@ fn main() {
         println!("ignored: {:?}", dwg.skipped);
     }
     let s = &res.stats;
+    // The max deviation is in mm, like --tol. The line reads as before, for scripts that parse it.
     println!(
         "output: {} closed + {} open paths, {} lines, {} arcs, {} circles, {} duplicates removed, max deviation {:.4}",
         s.closed_paths, s.open_paths, s.lines, s.arcs, s.circles, s.duplicates_removed, s.max_deviation
     );
     println!("wrote {}", out.display());
+    if let Some(note) = dwg.units().note() {
+        // --tol and --join are mm, so staff must know when the drawing's own units were guessed.
+        eprintln!("warning: {}{}", note[..1].to_lowercase(), &note[1..]);
+    }
     if let Some(w) = s.open_path_warning() {
         eprintln!("warning: {w}");
     }

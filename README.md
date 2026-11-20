@@ -32,7 +32,12 @@ with `git remote set-url origin https://github.com/vashz/dxf-cleaner.git`).
 | Blocks (INSERT) | exploded with their transform |
 
 Every result is checked against samples of the original geometry: no point moves more than
-the **Tolerance** (default 0.05 drawing units, usually mm). The achieved max deviation is shown.
+the **Tolerance** (default 0.05 mm). The achieved max deviation is shown, in mm.
+
+The Tolerance and Join gap are always mm, whatever units the drawing is in: Clean Up converts them
+from the drawing's `$INSUNITS`, and the cleaned file keeps the drawing's own units. A drawing that
+names no units is treated as mm, and staff are told (a note next to the file name in the window, a
+`warning:` line from `dxf-clean`). See `docs/adr/0001-tolerance-is-in-mm.md`.
 
 Output is an R12 (AC1009) DXF, the format nearly every CAM/cutting package reads, with either
 continuous `POLYLINE`s carrying arc bulges (recommended) or separate `LINE`/`ARC` entities.
@@ -47,7 +52,7 @@ cargo build --release
 Produces `target\release\dxf-cleaner.exe` (GUI) and `target\release\dxf-clean.exe` (command line):
 
 ```powershell
-dxf-clean input.dxf [-o output.dxf] [--tol 0.05] [--join 0.05] [--no-join] [--lines-arcs] [--origin] [--keep-duplicates] [--layer0]
+dxf-clean input.dxf [-o output.dxf] [--tol <mm, default 0.05>] [--join <mm, default 0.05>] [--no-join] [--lines-arcs] [--origin] [--keep-duplicates] [--layer0]
 ```
 
 Without `-o` it writes `<name>_clean.dxf` beside the input. The switches match the window's settings: `--no-join` turns off "Join touching paths", `--lines-arcs` exports separate LINE / ARC entities, `--origin` moves the drawing to 0,0, `--keep-duplicates` turns off "Remove duplicate geometry", and `--layer0` puts everything on layer 0. `dxf-clean --help` prints the same list.
