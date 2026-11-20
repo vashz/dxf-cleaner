@@ -5,6 +5,7 @@
 use crate::dxf_read::{Drawing, Entity};
 use crate::geom::*;
 use crate::spans::Span;
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
 #[derive(Clone, Debug)]
@@ -163,9 +164,24 @@ impl Path {
         self.segs = join_segs(std::mem::take(&mut self.segs), next.segs, tol);
     }
 
-    /// Prepends `prev`, meeting `prev`'s end and this path's start across the gap.
-    fn prepend(&mut self, prev: Path, tol: f64) {
-        self.segs = join_segs(prev.segs, std::mem::take(&mut self.segs), tol);
+    /// Joins paths on before this path's start for as long as `previous` has one: it is asked
+    /// with the path's current start and answers with a path to end there. Each is prepended,
+    /// meeting its end and this path's start across the gap.
+    fn extend_backward(&mut self, tol: f64, mut previous: impl FnMut(P) -> Option<Path>) {
+        // held last segment first meanwhile, so each join costs only the path joined on
+        let mut segs = std::mem::take(&mut self.segs);
+        segs.reverse();
+        while let Some(start) = segs.last().map(|f| f.seg.a) {
+            let Some(prev) = previous(start) else { break };
+            let mut prev_segs = prev.segs;
+            match (prev_segs.pop(), segs.pop()) {
+                (Some(l), Some(r)) => segs.extend(meet(l, r, tol).into_iter().rev()),
+                (l, r) => segs.extend(r.into_iter().chain(l)),
+            }
+            segs.extend(prev_segs.into_iter().rev());
+        }
+        segs.reverse();
+        self.segs = segs;
     }
 
     /// The path a converted source entity becomes. A closed entity (e.g. a closed polyline
@@ -817,65 +833,122 @@ impl Path {
 
 // ---------------------------------------------------------------- joining
 
-fn join_paths(paths: Vec<Path>, lim: Limits) -> Vec<Path> {
-    let n = paths.len();
-    let mut used = vec![false; n];
-    let mut out = Vec::new();
-    for i in 0..n {
-        if used[i] {
-            continue;
+/// Items filed under a point, so the ones near a place are found without looking at all the
+/// others. Joining and duplicate removal use it to stay fast on drawings with many entities.
+struct Grid<T> {
+    cell: f64,
+    cells: HashMap<(i64, i64), Vec<T>>,
+}
+
+impl<T: Copy> Grid<T> {
+    /// A grid whose [`Grid::near`] finds every item within `reach` of a point.
+    fn new(reach: f64) -> Grid<T> {
+        // cells twice the reach wide: rounding can never put two points that are within reach
+        // of each other more than one cell apart
+        Grid { cell: 2.0 * reach, cells: HashMap::new() }
+    }
+
+    fn key(&self, q: P) -> (i64, i64) {
+        // `as` clamps huge values and turns NaN into 0, so every point has a cell
+        ((q.x / self.cell).floor() as i64, (q.y / self.cell).floor() as i64)
+    }
+
+    fn insert(&mut self, at: P, item: T) {
+        self.cells.entry(self.key(at)).or_default().push(item);
+    }
+
+    /// Every item filed within reach of `q`, along with some a little further away. An item
+    /// may come up more than once.
+    fn near(&self, q: P) -> impl Iterator<Item = T> + '_ {
+        let (kx, ky) = self.key(q);
+        (-1..=1)
+            .flat_map(move |dx| (-1..=1).map(move |dy| (kx.saturating_add(dx), ky.saturating_add(dy))))
+            .filter_map(move |k| self.cells.get(&k))
+            .flatten()
+            .copied()
+    }
+}
+
+/// One of the two ends of an open path that may still be joined to another.
+#[derive(Clone, Copy)]
+struct PathEnd {
+    /// Which path, by its place in the drawing.
+    path: usize,
+    at: P,
+    /// The path's start rather than its end.
+    is_start: bool,
+}
+
+/// The paths of a drawing that have not been joined to another one yet. The open ones are
+/// found by where their ends are.
+struct Waiting {
+    /// Every path by its place in the drawing: `None` once it has been taken.
+    paths: Vec<Option<Path>>,
+    ends: Grid<PathEnd>,
+    join_gap: f64,
+}
+
+impl Waiting {
+    fn new(paths: Vec<Path>, join_gap: f64) -> Waiting {
+        // only ends within the join gap of each other can be joined: file them by position
+        let mut ends = Grid::new(join_gap);
+        for (i, path) in paths.iter().enumerate() {
+            if !path.closed {
+                ends.insert(path.start(), PathEnd { path: i, at: path.start(), is_start: true });
+                ends.insert(path.end(), PathEnd { path: i, at: path.end(), is_start: false });
+            }
         }
-        used[i] = true;
-        let mut cur = paths[i].clone();
+        Waiting { paths: paths.into_iter().map(Some).collect(), ends, join_gap }
+    }
+
+    /// The path at place `i` in the drawing, unless it has already been taken.
+    fn take(&mut self, i: usize) -> Option<Path> {
+        self.paths[i].take()
+    }
+
+    /// Takes the open path on `layer` that has an end nearest to `q`, no further than the join
+    /// gap away. It comes turned round if need be, so that this end is its start (`as_start`)
+    /// or its end. Of ends equally near, the path that comes first in the drawing wins, then
+    /// the end that needs no turning round.
+    fn take_nearest(&mut self, q: P, layer: &str, as_start: bool) -> Option<Path> {
+        let mut best: Option<((f64, usize, bool), PathEnd)> = None;
+        for e in self.ends.near(q) {
+            let Some(path) = &self.paths[e.path] else { continue };
+            if path.layer != layer {
+                continue;
+            }
+            let d = e.at.dist(q);
+            if !(d <= self.join_gap) {
+                continue; // too far, or unmeasurable (NaN)
+            }
+            // nearest first, then the earlier path, then the end that needs no turning round
+            let rank = (d, e.path, e.is_start != as_start);
+            if best.is_none_or(|(b, _)| rank < b) {
+                best = Some((rank, e));
+            }
+        }
+        let (_, e) = best?;
+        let mut path = self.take(e.path)?;
+        if e.is_start != as_start {
+            path.reverse();
+        }
+        Some(path)
+    }
+}
+
+fn join_paths(paths: Vec<Path>, lim: Limits) -> Vec<Path> {
+    let count = paths.len();
+    let mut waiting = Waiting::new(paths, lim.join_gap);
+    let mut out = Vec::new();
+    for i in 0..count {
+        let Some(mut cur) = waiting.take(i) else { continue };
         if !cur.closed {
+            let layer = cur.layer.clone();
             // extend forward
-            loop {
-                let end = cur.end();
-                let mut best: Option<(usize, bool, f64)> = None;
-                for j in 0..n {
-                    if used[j] || paths[j].closed || paths[j].layer != cur.layer {
-                        continue;
-                    }
-                    let ds = paths[j].start().dist(end);
-                    let de = paths[j].end().dist(end);
-                    for (d, rev) in [(ds, false), (de, true)] {
-                        if d <= lim.join_gap && best.map(|b| d < b.2).unwrap_or(true) {
-                            best = Some((j, rev, d));
-                        }
-                    }
-                }
-                let Some((j, rev, _)) = best else { break };
-                used[j] = true;
-                let mut nxt = paths[j].clone();
-                if rev {
-                    nxt.reverse();
-                }
-                cur.append(nxt, lim.tol);
+            while let Some(next) = waiting.take_nearest(cur.end(), &layer, true) {
+                cur.append(next, lim.tol);
             }
-            // extend backward
-            loop {
-                let start = cur.start();
-                let mut best: Option<(usize, bool, f64)> = None;
-                for j in 0..n {
-                    if used[j] || paths[j].closed || paths[j].layer != cur.layer {
-                        continue;
-                    }
-                    let de = paths[j].end().dist(start);
-                    let ds = paths[j].start().dist(start);
-                    for (d, rev) in [(de, false), (ds, true)] {
-                        if d <= lim.join_gap && best.map(|b| d < b.2).unwrap_or(true) {
-                            best = Some((j, rev, d));
-                        }
-                    }
-                }
-                let Some((j, rev, _)) = best else { break };
-                used[j] = true;
-                let mut prv = paths[j].clone();
-                if rev {
-                    prv.reverse();
-                }
-                cur.prepend(prv, lim.tol);
-            }
+            cur.extend_backward(lim.tol, |start| waiting.take_nearest(start, &layer, false));
         }
         cur.close_if_touching(lim);
         out.push(cur);
@@ -943,14 +1016,18 @@ fn shapes_equal(a: &Shape, b: &Shape, tol: f64) -> bool {
 fn dedupe(shapes: Vec<Shape>, tol: f64, removed: &mut usize) -> Vec<Shape> {
     let mut keep: Vec<Shape> = Vec::with_capacity(shapes.len());
     let mut boxes: Vec<BBox> = Vec::new();
+    // kept shapes by the min corner of their box: a duplicate's corner is within `tol` of it
+    let mut by_corner: Grid<usize> = Grid::new(tol);
     for s in shapes {
         let bb = s.bbox();
-        let dup = keep.iter().zip(&boxes).any(|(k, kb)| {
-            kb.min.dist(bb.min) <= tol && kb.max.dist(bb.max) <= tol && shapes_equal(k, &s, tol)
+        let dup = by_corner.near(bb.min).any(|k| {
+            let kb = &boxes[k];
+            kb.min.dist(bb.min) <= tol && kb.max.dist(bb.max) <= tol && shapes_equal(&keep[k], &s, tol)
         });
         if dup {
             *removed += 1;
         } else {
+            by_corner.insert(bb.min, keep.len());
             boxes.push(bb);
             keep.push(s);
         }
@@ -1493,5 +1570,173 @@ mod tests {
         let q = p(3.0, 4.0);
         let res = clean(&Drawing { entities: vec![ent(Geom::Line { a: q, b: q })], ..Default::default() }, &Options::default());
         assert!(res.shapes.is_empty(), "{:?}", res.shapes);
+    }
+
+    fn line(a: P, b: P) -> Entity {
+        ent(Geom::Line { a, b })
+    }
+
+    fn cleaned(entities: Vec<Entity>) -> CleanResult {
+        clean(&Drawing { entities, ..Default::default() }, &Options::default())
+    }
+
+    /// The paths of a result, each as its start and end.
+    fn path_ends(res: &CleanResult) -> Vec<(P, P)> {
+        res.shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Path(path) => Some((path.start(), path.end())),
+                Shape::Circle { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn grid_finds_everything_within_reach_of_a_point() {
+        // points scattered either side of zero, a few hundredths apart, checked against a full search
+        let mut seed = 12345u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as f64 / (1u64 << 31) as f64 - 0.5) * 2.0
+        };
+        let pts: Vec<P> = (0..400).map(|_| p(next(), next())).collect();
+        for reach in [0.05, 0.3, 5.0] {
+            let mut grid: Grid<usize> = Grid::new(reach);
+            for (i, q) in pts.iter().enumerate() {
+                grid.insert(*q, i);
+            }
+            for q in &pts {
+                let found: Vec<usize> = grid.near(*q).collect();
+                for (i, other) in pts.iter().enumerate() {
+                    assert!(other.dist(*q) > reach || found.contains(&i), "reach {reach}: {other:?} is near {q:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grid_gives_every_point_a_cell_however_far_out_it_is() {
+        let mut grid: Grid<u8> = Grid::new(0.05);
+        let far = [p(1e300, -1e300), p(f64::INFINITY, 0.0), p(f64::NAN, f64::NAN), p(-4e18, 4e18)];
+        for (i, q) in far.iter().enumerate() {
+            grid.insert(*q, i as u8);
+        }
+        for (i, q) in far.iter().enumerate() {
+            assert!(grid.near(*q).any(|k| k == i as u8), "{q:?}");
+        }
+    }
+
+    #[test]
+    fn an_end_joins_the_nearest_end_within_the_gap() {
+        // the first line ends at (10, 0); both others start within the join gap of that, a hair
+        // apart, and the later one is the nearer
+        let res = cleaned(vec![
+            line(p(0.0, 0.0), p(10.0, 0.0)),
+            line(p(10.03, 0.01), p(10.03, 8.0)),
+            line(p(10.01, 0.01), p(10.01, -8.0)),
+        ]);
+        let ends = path_ends(&res);
+        assert_eq!(ends.len(), 2, "{ends:?}");
+        assert!(ends.contains(&(p(0.0, 0.0), p(10.01, -8.0))), "the nearer line is joined: {ends:?}");
+        assert!(ends.contains(&(p(10.03, 0.01), p(10.03, 8.0))), "the other line is left alone: {ends:?}");
+    }
+
+    /// An open path from `from` out to a corner and back to `to`.
+    fn hook(from: P, corner: P, to: P) -> Entity {
+        ent(Geom::Poly { pts: vec![from, corner, to], bulges: vec![0.0; 3], closed: false })
+    }
+
+    #[test]
+    fn a_path_with_both_ends_equally_near_is_joined_the_way_it_was_drawn() {
+        // both ends of the hook are as near to the line's end at (10, 0), and too far apart to close
+        let res = cleaned(vec![line(p(0.0, 0.0), p(10.0, 0.0)), hook(p(10.03, 0.03), p(15.0, 5.0), p(10.03, -0.03))]);
+        assert_eq!(path_ends(&res), vec![(p(0.0, 0.0), p(10.03, -0.03))], "the hook follows the line from its own start");
+        // the same before the line's start at (10, 0): the hook leads into it by its own end
+        let res = cleaned(vec![line(p(10.0, 0.0), p(20.0, 0.0)), hook(p(9.97, 0.03), p(5.0, 5.0), p(9.97, -0.03))]);
+        assert_eq!(path_ends(&res), vec![(p(9.97, 0.03), p(20.0, 0.0))], "the hook leads into the line by its own end");
+    }
+
+    #[test]
+    fn ends_on_different_layers_are_not_joined() {
+        // the marking line starts exactly where the first line ends; the line on its own layer starts a little off
+        let mark = Entity { layer: "MARK".into(), ..line(p(10.0, 0.0), p(10.0, 8.0)) };
+        let res = cleaned(vec![line(p(0.0, 0.0), p(10.0, 0.0)), mark, line(p(10.02, 0.0), p(10.02, -8.0))]);
+        let found: Vec<(&str, P, P)> = res
+            .shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Path(path) => Some((path.layer(), path.start(), path.end())),
+                Shape::Circle { .. } => None,
+            })
+            .collect();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.contains(&("0", p(0.0, 0.0), p(10.02, -8.0))), "{found:?}");
+        assert!(found.contains(&("MARK", p(10.0, 0.0), p(10.0, 8.0))), "{found:?}");
+    }
+
+    #[test]
+    fn a_long_open_path_drawn_last_line_first_joins_in_its_own_order() {
+        // a zigzag of 300 lines in runs of three, with a small gap between runs, written from its far end back
+        let corner = |i: usize| p(i as f64 * 2.0, (i % 2) as f64 * 3.0);
+        let run = |k: usize| {
+            let pts = vec![corner(3 * k), corner(3 * k + 1), corner(3 * k + 2), corner(3 * k + 3) + p(0.0, 0.01)];
+            ent(Geom::Poly { pts, bulges: vec![0.0; 4], closed: false })
+        };
+        let mut ents: Vec<Entity> = (0..100).map(run).collect();
+        ents.reverse();
+        let res = cleaned(ents);
+        assert_eq!((res.stats.open_paths, res.stats.closed_paths), (1, 0), "{:?}", res.stats);
+        let path = only_path(&res);
+        assert_eq!(path.start(), corner(0));
+        assert_eq!(path.end(), corner(300) + p(0.0, 0.01));
+        let mut at = path.start();
+        for s in path.segs() {
+            assert_eq!(s.a, at, "each segment starts where the previous one ends");
+            assert!(s.b.x > s.a.x, "the path runs the way the zigzag does: {s:?}");
+            at = s.b;
+        }
+    }
+
+    #[test]
+    fn of_two_ends_equally_near_the_earlier_path_is_joined() {
+        // both the second and the third line start exactly where the first one ends
+        let res = cleaned(vec![
+            line(p(0.0, 0.0), p(10.0, 0.0)),
+            line(p(10.0, 0.0), p(10.0, 8.0)),
+            line(p(10.0, 0.0), p(10.0, -8.0)),
+        ]);
+        // the second line follows the first; the third is left as it was
+        assert_eq!(path_ends(&res), vec![(p(0.0, 0.0), p(10.0, 8.0)), (p(10.0, 0.0), p(10.0, -8.0))]);
+    }
+
+    #[test]
+    fn ends_join_and_duplicates_go_on_either_side_of_zero() {
+        // lines that meet, and copies that differ by less than the tolerance, straddling x = 0 and y = 0
+        let res = cleaned(vec![
+            line(p(-5.0, -0.01), p(-0.01, -0.01)),
+            line(p(0.01, 0.01), p(5.0, 0.01)),
+            line(p(-0.02, 7.0), p(-0.02, 3.0)),
+            line(p(0.02, 7.0), p(0.02, 3.0)),
+        ]);
+        assert_eq!(res.stats.duplicates_removed, 1, "{:?}", res.stats);
+        let ends = path_ends(&res);
+        assert_eq!(ends.len(), 2, "{ends:?}");
+        assert!(ends.contains(&(p(-5.0, -0.01), p(5.0, 0.01))), "the two lines meet across zero: {ends:?}");
+    }
+
+    #[test]
+    fn many_separate_shapes_stay_separate_and_lose_only_their_copies() {
+        // a sheet of short lines and holes, every one drawn twice, too far apart to join
+        let mut ents = Vec::new();
+        for i in 0..4000 {
+            let at = p((i % 80) as f64 * 10.0 - 400.0, (i / 80) as f64 * 10.0 - 250.0);
+            for _copy in 0..2 {
+                ents.push(line(at, at + p(3.0, 2.0)));
+                ents.push(ent(Geom::Circle { c: at + p(6.0, 6.0), r: 1.5 }));
+            }
+        }
+        let res = cleaned(ents);
+        assert_eq!((res.stats.open_paths, res.stats.lines, res.stats.circles), (4000, 4000, 4000), "{:?}", res.stats);
+        assert_eq!(res.stats.duplicates_removed, 8000);
     }
 }
