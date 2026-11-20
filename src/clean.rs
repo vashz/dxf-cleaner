@@ -164,9 +164,24 @@ impl Path {
         self.segs = join_segs(std::mem::take(&mut self.segs), next.segs, tol);
     }
 
-    /// Prepends `prev`, meeting `prev`'s end and this path's start across the gap.
-    fn prepend(&mut self, prev: Path, tol: f64) {
-        self.segs = join_segs(prev.segs, std::mem::take(&mut self.segs), tol);
+    /// Joins paths on before this path's start for as long as `previous` has one: it is asked
+    /// with the path's current start and answers with a path to end there. Each is prepended,
+    /// meeting its end and this path's start across the gap.
+    fn extend_backward(&mut self, tol: f64, mut previous: impl FnMut(P) -> Option<Path>) {
+        // held last segment first meanwhile, so each join costs only the path joined on
+        let mut segs = std::mem::take(&mut self.segs);
+        segs.reverse();
+        while let Some(start) = segs.last().map(|f| f.seg.a) {
+            let Some(prev) = previous(start) else { break };
+            let mut prev_segs = prev.segs;
+            match (prev_segs.pop(), segs.pop()) {
+                (Some(l), Some(r)) => segs.extend(meet(l, r, tol).into_iter().rev()),
+                (l, r) => segs.extend(r.into_iter().chain(l)),
+            }
+            segs.extend(prev_segs.into_iter().rev());
+        }
+        segs.reverse();
+        self.segs = segs;
     }
 
     /// The path a converted source entity becomes. A closed entity (e.g. a closed polyline
@@ -854,69 +869,86 @@ impl<T: Copy> Grid<T> {
     }
 }
 
-/// One end of an open path that may still be joined to another.
+/// One of the two ends of an open path that may still be joined to another.
 #[derive(Clone, Copy)]
 struct PathEnd {
     /// Which path, by its place in the drawing.
     path: usize,
     at: P,
-    /// The path's end rather than its start.
-    is_end: bool,
+    /// The path's start rather than its end.
+    is_start: bool,
 }
 
-/// The end of a waiting path on `layer` that is nearest to `q`, no further than `gap` away.
-/// Of ends equally near, the path that comes first in the drawing wins, then its start
-/// (its end when `prefer_end`).
-fn nearest_end(ends: &Grid<PathEnd>, waiting: &[Option<Path>], q: P, layer: &str, gap: f64, prefer_end: bool) -> Option<PathEnd> {
-    let mut best: Option<((f64, usize, bool), PathEnd)> = None;
-    for e in ends.near(q) {
-        let Some(path) = &waiting[e.path] else { continue };
-        if path.layer != layer {
-            continue;
+/// The paths of a drawing that have not been joined to another one yet. The open ones are
+/// found by where their ends are.
+struct Waiting {
+    /// Every path by its place in the drawing: `None` once it has been taken.
+    paths: Vec<Option<Path>>,
+    ends: Grid<PathEnd>,
+    join_gap: f64,
+}
+
+impl Waiting {
+    fn new(paths: Vec<Path>, join_gap: f64) -> Waiting {
+        // only ends within the join gap of each other can be joined: file them by position
+        let mut ends = Grid::new(join_gap);
+        for (i, path) in paths.iter().enumerate() {
+            if !path.closed {
+                ends.insert(path.start(), PathEnd { path: i, at: path.start(), is_start: true });
+                ends.insert(path.end(), PathEnd { path: i, at: path.end(), is_start: false });
+            }
         }
-        let d = e.at.dist(q);
-        if !(d <= gap) {
-            continue; // too far, or unmeasurable (NaN)
-        }
-        let rank = (d, e.path, e.is_end != prefer_end);
-        if best.is_none_or(|(b, _)| rank < b) {
-            best = Some((rank, e));
-        }
+        Waiting { paths: paths.into_iter().map(Some).collect(), ends, join_gap }
     }
-    best.map(|(_, e)| e)
+
+    /// The path at place `i` in the drawing, unless it has already been taken.
+    fn take(&mut self, i: usize) -> Option<Path> {
+        self.paths[i].take()
+    }
+
+    /// Takes the open path on `layer` that has an end nearest to `q`, no further than the join
+    /// gap away. It comes turned round if need be, so that this end is its start (`as_start`)
+    /// or its end. Of ends equally near, the path that comes first in the drawing wins, then
+    /// the end that needs no turning round.
+    fn take_nearest(&mut self, q: P, layer: &str, as_start: bool) -> Option<Path> {
+        let mut best: Option<((f64, usize, bool), PathEnd)> = None;
+        for e in self.ends.near(q) {
+            let Some(path) = &self.paths[e.path] else { continue };
+            if path.layer != layer {
+                continue;
+            }
+            let d = e.at.dist(q);
+            if !(d <= self.join_gap) {
+                continue; // too far, or unmeasurable (NaN)
+            }
+            // nearest first, then the earlier path, then the end that needs no turning round
+            let rank = (d, e.path, e.is_start != as_start);
+            if best.is_none_or(|(b, _)| rank < b) {
+                best = Some((rank, e));
+            }
+        }
+        let (_, e) = best?;
+        let mut path = self.take(e.path)?;
+        if e.is_start != as_start {
+            path.reverse();
+        }
+        Some(path)
+    }
 }
 
 fn join_paths(paths: Vec<Path>, lim: Limits) -> Vec<Path> {
-    // only ends within the join gap of each other can be joined: file them by position
-    let mut ends: Grid<PathEnd> = Grid::new(lim.join_gap);
-    for (path, p) in paths.iter().enumerate() {
-        if !p.closed {
-            ends.insert(p.start(), PathEnd { path, at: p.start(), is_end: false });
-            ends.insert(p.end(), PathEnd { path, at: p.end(), is_end: true });
-        }
-    }
-    // a path leaves `waiting` when it starts a joined path or is joined to one
-    let mut waiting: Vec<Option<Path>> = paths.into_iter().map(Some).collect();
+    let count = paths.len();
+    let mut waiting = Waiting::new(paths, lim.join_gap);
     let mut out = Vec::new();
-    for i in 0..waiting.len() {
-        let Some(mut cur) = waiting[i].take() else { continue };
+    for i in 0..count {
+        let Some(mut cur) = waiting.take(i) else { continue };
         if !cur.closed {
+            let layer = cur.layer.clone();
             // extend forward
-            while let Some(e) = nearest_end(&ends, &waiting, cur.end(), &cur.layer, lim.join_gap, false) {
-                let mut nxt = waiting[e.path].take().expect("nearest_end only returns waiting paths");
-                if e.is_end {
-                    nxt.reverse();
-                }
-                cur.append(nxt, lim.tol);
+            while let Some(next) = waiting.take_nearest(cur.end(), &layer, true) {
+                cur.append(next, lim.tol);
             }
-            // extend backward
-            while let Some(e) = nearest_end(&ends, &waiting, cur.start(), &cur.layer, lim.join_gap, true) {
-                let mut prv = waiting[e.path].take().expect("nearest_end only returns waiting paths");
-                if !e.is_end {
-                    prv.reverse();
-                }
-                cur.prepend(prv, lim.tol);
-            }
+            cur.extend_backward(lim.tol, |start| waiting.take_nearest(start, &layer, false));
         }
         cur.close_if_touching(lim);
         out.push(cur);
@@ -1596,16 +1628,73 @@ mod tests {
 
     #[test]
     fn an_end_joins_the_nearest_end_within_the_gap() {
-        // the first line ends at (10, 0); the third line starts nearer to that than the second
+        // the first line ends at (10, 0); both others start within the join gap of that, a hair
+        // apart, and the later one is the nearer
         let res = cleaned(vec![
             line(p(0.0, 0.0), p(10.0, 0.0)),
-            line(p(10.03, 0.0), p(10.03, 8.0)),
-            line(p(10.0, -0.01), p(10.0, -8.0)),
+            line(p(10.03, 0.01), p(10.03, 8.0)),
+            line(p(10.01, 0.01), p(10.01, -8.0)),
         ]);
         let ends = path_ends(&res);
         assert_eq!(ends.len(), 2, "{ends:?}");
-        assert!(ends.contains(&(p(0.0, 0.0), p(10.0, -8.0))), "the nearer line is joined: {ends:?}");
-        assert!(ends.contains(&(p(10.03, 0.0), p(10.03, 8.0))), "the other line is left alone: {ends:?}");
+        assert!(ends.contains(&(p(0.0, 0.0), p(10.01, -8.0))), "the nearer line is joined: {ends:?}");
+        assert!(ends.contains(&(p(10.03, 0.01), p(10.03, 8.0))), "the other line is left alone: {ends:?}");
+    }
+
+    /// An open path from `from` out to a corner and back to `to`.
+    fn hook(from: P, corner: P, to: P) -> Entity {
+        ent(Geom::Poly { pts: vec![from, corner, to], bulges: vec![0.0; 3], closed: false })
+    }
+
+    #[test]
+    fn a_path_with_both_ends_equally_near_is_joined_the_way_it_was_drawn() {
+        // both ends of the hook are as near to the line's end at (10, 0), and too far apart to close
+        let res = cleaned(vec![line(p(0.0, 0.0), p(10.0, 0.0)), hook(p(10.03, 0.03), p(15.0, 5.0), p(10.03, -0.03))]);
+        assert_eq!(path_ends(&res), vec![(p(0.0, 0.0), p(10.03, -0.03))], "the hook follows the line from its own start");
+        // the same before the line's start at (10, 0): the hook leads into it by its own end
+        let res = cleaned(vec![line(p(10.0, 0.0), p(20.0, 0.0)), hook(p(9.97, 0.03), p(5.0, 5.0), p(9.97, -0.03))]);
+        assert_eq!(path_ends(&res), vec![(p(9.97, 0.03), p(20.0, 0.0))], "the hook leads into the line by its own end");
+    }
+
+    #[test]
+    fn ends_on_different_layers_are_not_joined() {
+        // the marking line starts exactly where the first line ends; the line on its own layer starts a little off
+        let mark = Entity { layer: "MARK".into(), ..line(p(10.0, 0.0), p(10.0, 8.0)) };
+        let res = cleaned(vec![line(p(0.0, 0.0), p(10.0, 0.0)), mark, line(p(10.02, 0.0), p(10.02, -8.0))]);
+        let found: Vec<(&str, P, P)> = res
+            .shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Path(path) => Some((path.layer(), path.start(), path.end())),
+                Shape::Circle { .. } => None,
+            })
+            .collect();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.contains(&("0", p(0.0, 0.0), p(10.02, -8.0))), "{found:?}");
+        assert!(found.contains(&("MARK", p(10.0, 0.0), p(10.0, 8.0))), "{found:?}");
+    }
+
+    #[test]
+    fn a_long_open_path_drawn_last_line_first_joins_in_its_own_order() {
+        // a zigzag of 300 lines in runs of three, with a small gap between runs, written from its far end back
+        let corner = |i: usize| p(i as f64 * 2.0, (i % 2) as f64 * 3.0);
+        let run = |k: usize| {
+            let pts = vec![corner(3 * k), corner(3 * k + 1), corner(3 * k + 2), corner(3 * k + 3) + p(0.0, 0.01)];
+            ent(Geom::Poly { pts, bulges: vec![0.0; 4], closed: false })
+        };
+        let mut ents: Vec<Entity> = (0..100).map(run).collect();
+        ents.reverse();
+        let res = cleaned(ents);
+        assert_eq!((res.stats.open_paths, res.stats.closed_paths), (1, 0), "{:?}", res.stats);
+        let path = only_path(&res);
+        assert_eq!(path.start(), corner(0));
+        assert_eq!(path.end(), corner(300) + p(0.0, 0.01));
+        let mut at = path.start();
+        for s in path.segs() {
+            assert_eq!(s.a, at, "each segment starts where the previous one ends");
+            assert!(s.b.x > s.a.x, "the path runs the way the zigzag does: {s:?}");
+            at = s.b;
+        }
     }
 
     #[test]
@@ -1622,7 +1711,7 @@ mod tests {
 
     #[test]
     fn ends_join_and_duplicates_go_on_either_side_of_zero() {
-        // pieces that meet, and copies that differ by less than the tolerance, straddling x = 0 and y = 0
+        // lines that meet, and copies that differ by less than the tolerance, straddling x = 0 and y = 0
         let res = cleaned(vec![
             line(p(-5.0, -0.01), p(-0.01, -0.01)),
             line(p(0.01, 0.01), p(5.0, 0.01)),
@@ -1632,11 +1721,11 @@ mod tests {
         assert_eq!(res.stats.duplicates_removed, 1, "{:?}", res.stats);
         let ends = path_ends(&res);
         assert_eq!(ends.len(), 2, "{ends:?}");
-        assert!(ends.contains(&(p(-5.0, -0.01), p(5.0, 0.01))), "the two pieces meet across zero: {ends:?}");
+        assert!(ends.contains(&(p(-5.0, -0.01), p(5.0, 0.01))), "the two lines meet across zero: {ends:?}");
     }
 
     #[test]
-    fn many_separate_entities_stay_separate_and_lose_only_their_copies() {
+    fn many_separate_shapes_stay_separate_and_lose_only_their_copies() {
         // a sheet of short lines and holes, every one drawn twice, too far apart to join
         let mut ents = Vec::new();
         for i in 0..4000 {
