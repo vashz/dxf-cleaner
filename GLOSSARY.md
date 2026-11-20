@@ -42,15 +42,19 @@ _Avoid_: Engraving, etch
 ### Accuracy
 
 **Tolerance**:
-The furthest Clean Up may move any part of the original geometry, in drawing units (usually mm).
+The furthest Clean Up may move any part of the original geometry. It is a physical distance in mm, whatever units the drawing is in. Shapes closer together than the tolerance count as duplicates.
 _Avoid_: Precision, accuracy
+
+**Drawing units**:
+The units a source drawing is drawn in. The cleaned file keeps them: Clean Up never rescales the geometry. A drawing that names no units is treated as drawn in mm, and staff are told so.
+_Avoid_: Scale
 
 **Deviation**:
 The distance between the original geometry and the segments that replace it.
 _Avoid_: Error
 
 **Join gap**:
-The largest distance between two path ends that still counts as touching, so the ends are joined. It may be wider than the tolerance.
+The largest distance between two path ends that still counts as touching, so the ends are joined. Like the tolerance, it is a physical distance in mm, and it may be wider than the tolerance.
 _Avoid_: Join tolerance, snap distance
 
 **Bridge**:
